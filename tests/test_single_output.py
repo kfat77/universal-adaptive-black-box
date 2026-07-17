@@ -19,7 +19,18 @@ class SingleOutputRegressionTest(unittest.TestCase):
         X = np.linspace(-1.0, 1.0, 30).reshape(-1, 1)
         Y = (X**2).reshape(-1, 1)
         model = AdaptiveBlackBox(epochs=2).fit(X, Y, validation_folds=3)
-        self.assertEqual(set(model.metrics), {"mlp", "random_forest", "extra_trees", "hist_gradient_boosting"})
+        self.assertEqual(
+            set(model.metrics),
+            {
+                "dummy",
+                "linear_regression",
+                "ridge",
+                "mlp",
+                "random_forest",
+                "extra_trees",
+                "hist_gradient_boosting",
+            },
+        )
         self.assertEqual(model.training_samples, len(X))
         self.assertIn("mse_std", model.metrics[model.model_name])
         self.assertIn("r2_std", model.metrics[model.model_name])
@@ -29,6 +40,14 @@ class SingleOutputRegressionTest(unittest.TestCase):
         Y = np.column_stack((X.ravel() ** 2, 2.0 * X.ravel() + 1.0))
         model = AdaptiveBlackBox(epochs=2).fit(X, Y, validation_folds=3)
         self.assertEqual(model.predict(np.array([[0.25]])).shape, (1, 2))
+
+    def test_mlp_configuration_supports_minibatches_and_early_stopping(self) -> None:
+        X = np.linspace(-1.0, 1.0, 40).reshape(-1, 1)
+        model = AdaptiveBlackBox(
+            mlp_config={"hidden_layers": (16,), "batch_size": 8, "max_epochs": 5, "patience": 2}
+        )
+        model.fit(X, X, validation_folds=2)
+        self.assertEqual(model.mlp_config["batch_size"], 8)
 
 
 if __name__ == "__main__":

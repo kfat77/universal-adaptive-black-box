@@ -1,5 +1,3 @@
-"""Universal adaptive black-box modelling package."""
+"""Deprecated compatibility namespace; import :mod:`adaptive_surrogate` instead."""
 
-from src.data_loader import TabularDataset, load_tabular_data
-
-__all__ = ["TabularDataset", "load_tabular_data"]
+from .adaptive_surrogate import *  # noqa: F403
