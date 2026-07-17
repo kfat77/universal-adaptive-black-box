@@ -6,11 +6,111 @@ import numpy as np
 from scipy.optimize import differential_evolution, minimize
 
 from .core_engine import AdaptiveBlackBox
+from .pareto import non_dominated_mask
 
 
 class InverseSolver:
     def __init__(self, artifact_path: str):
         self.model = AdaptiveBlackBox.load(artifact_path)
+
+    def pareto_solve(
+        self,
+        objectives: list[dict[str, Any]],
+        x_bounds: list[tuple[float, float]],
+        n_candidates: int = 512,
+        max_solutions: int = 50,
+        constraints: list[Callable[[np.ndarray], bool | float]] | None = None,
+        confidence: float = 0.9,
+        random_state: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return a sampled Pareto front for named/indexed surrogate outputs.
+
+        This is a bounded candidate-pool method, not a claim of globally optimal
+        multi-objective optimization. Constraints are hard filters; each result
+        includes predicted outputs, intervals, feasibility, and OOD diagnostics.
+        """
+        if self.model.input_dim is None or self.model.output_dim is None:
+            raise RuntimeError("Load a trained model before Pareto solving.")
+        bounds = np.asarray(x_bounds, dtype=float)
+        if (
+            bounds.shape != (self.model.input_dim, 2)
+            or not np.isfinite(bounds).all()
+            or np.any(bounds[:, 0] >= bounds[:, 1])
+        ):
+            raise ValueError("x_bounds must contain finite lower/upper bounds for each input.")
+        if not objectives or n_candidates < 2 or max_solutions < 1:
+            raise ValueError(
+                "objectives, at least two candidates, and a positive max_solutions are required."
+            )
+        indices, directions, weights = [], [], []
+        for objective in objectives:
+            output = objective.get("output")
+            if isinstance(output, str):
+                if self.model.target_names is None or output not in self.model.target_names:
+                    raise ValueError(f"Unknown objective output: {output}")
+                index = self.model.target_names.index(output)
+            elif isinstance(output, int) and 0 <= output < self.model.output_dim:
+                index = output
+            else:
+                raise ValueError("Each objective needs a valid output index or saved target name.")
+            direction = objective.get("direction")
+            weight = float(objective.get("weight", 1.0))
+            if direction not in {"minimize", "maximize"} or not np.isfinite(weight) or weight <= 0:
+                raise ValueError(
+                    "Objectives need minimize/maximize directions and positive finite weights."
+                )
+            indices.append(index)
+            directions.append(direction)
+            weights.append(weight)
+        if len(set(indices)) != len(indices):
+            raise ValueError("Each Pareto objective must refer to a different output.")
+        rng = np.random.default_rng(
+            self.model.random_state if random_state is None else random_state
+        )
+        candidates = rng.uniform(
+            bounds[:, 0], bounds[:, 1], size=(n_candidates, self.model.input_dim)
+        )
+
+        def is_feasible(candidate: np.ndarray) -> bool:
+            for constraint in constraints or []:
+                result = constraint(candidate)
+                if isinstance(result, (bool, np.bool_)):
+                    if not result:
+                        return False
+                elif not np.isfinite(float(result)) or float(result) < 0:
+                    return False
+            return True
+
+        feasible = np.array([is_feasible(candidate) for candidate in candidates])
+        candidates = candidates[feasible]
+        if not len(candidates):
+            return []
+        prediction, lower, upper = self.model.predict_interval(candidates, confidence=confidence)
+        assessment = self.model.assess_distribution(candidates)
+        objective_values = prediction[:, indices]
+        front = non_dominated_mask(objective_values, directions)
+        selected = np.flatnonzero(front)[:max_solutions]
+        factors = np.array([1.0 if direction == "minimize" else -1.0 for direction in directions])
+        normalized = (objective_values - objective_values.min(axis=0)) / np.maximum(
+            np.ptp(objective_values, axis=0), np.finfo(float).eps
+        )
+        scalarized = normalized @ (np.asarray(weights) * factors)
+        return [
+            {
+                "x": candidates[index],
+                "predicted_y": prediction[index],
+                "lower": lower[index],
+                "upper": upper[index],
+                "objective_values": objective_values[index],
+                "pareto_rank": 0,
+                "non_dominated": True,
+                "scalarized_score": float(scalarized[index]),
+                "feasible": True,
+                "in_distribution": bool(assessment["in_distribution"][index]),
+                "extrapolation_score": float(assessment["extrapolation_score"][index]),
+            }
+            for index in selected
+        ]
 
     def inverse_solve(
         self,
