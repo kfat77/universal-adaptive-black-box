@@ -291,7 +291,7 @@ class AdaptiveBlackBox:
         X: np.ndarray,
         Y: np.ndarray,
         validation_folds: int = 3,
-        output_weights: list[float] | np.ndarray | None = None,
+        output_weights: list[float] | np.ndarray | dict[str, float] | None = None,
         selection_metric: str = "nrmse",
         validation_strategy: str = "kfold",
         groups: np.ndarray | None = None,
@@ -337,7 +337,6 @@ class AdaptiveBlackBox:
             raise ValueError("search_mode must be fast, balanced, or thorough.")
         if not 0.05 <= calibration_fraction < 0.5:
             raise ValueError("calibration_fraction must be between 0.05 and 0.5.")
-        self.output_weights = validate_output_weights(output_weights, self.output_dim)
         self.selection_metric = selection_metric
         self.validation_strategy = validation_strategy
         self.feature_names = self._validate_names(
@@ -350,6 +349,16 @@ class AdaptiveBlackBox:
             self.output_dim,
             "target_names",
         )
+        resolved_weights: list[float] | np.ndarray | None
+        if isinstance(output_weights, dict):
+            if self.target_names is None or set(output_weights) != set(self.target_names):
+                raise ValueError(
+                    "Named output_weights must provide exactly the saved target names."
+                )
+            resolved_weights = [output_weights[name] for name in self.target_names]
+        else:
+            resolved_weights = output_weights
+        self.output_weights = validate_output_weights(resolved_weights, self.output_dim)
         self.uncertainty_method = uncertainty_method
         self.search_mode = search_mode
         self.search_details = {}
@@ -471,7 +480,7 @@ class AdaptiveBlackBox:
         X: np.ndarray,
         Y: np.ndarray,
         validation_folds: int,
-        output_weights: list[float] | np.ndarray | None,
+        output_weights: list[float] | np.ndarray | dict[str, float] | None,
         selection_metric: str,
         groups: np.ndarray | None,
         feature_names: list[str] | tuple[str, ...] | None,
@@ -498,7 +507,17 @@ class AdaptiveBlackBox:
             groups,
         )
         outer_fold_metrics: list[dict[str, Any]] = []
-        weights = validate_output_weights(output_weights, raw_y.shape[1])
+        if isinstance(output_weights, dict):
+            if target_names is None or set(output_weights) != set(target_names):
+                raise ValueError(
+                    "Nested named output_weights require exactly the supplied target_names."
+                )
+            nested_weights: list[float] | np.ndarray | None = [
+                output_weights[name] for name in target_names
+            ]
+        else:
+            nested_weights = output_weights
+        weights = validate_output_weights(nested_weights, raw_y.shape[1])
         scales = np.ptp(raw_y, axis=0)
         for fold, (train_index, test_index) in enumerate(outer_splits):
             inner = AdaptiveBlackBox(

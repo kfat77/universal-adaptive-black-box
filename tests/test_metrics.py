@@ -4,6 +4,7 @@ import unittest
 
 import numpy as np
 
+from adaptive_surrogate import AdaptiveBlackBox
 from src.metrics import compute_regression_metrics, validate_output_weights
 
 
@@ -21,3 +22,15 @@ class RegressionMetricsTest(unittest.TestCase):
             validate_output_weights([1.0], 2)
         with self.assertRaises(ValueError):
             validate_output_weights([0.0, 0.0], 2)
+
+    def test_named_output_weights_follow_target_names(self) -> None:
+        x = np.linspace(-1.0, 1.0, 20).reshape(-1, 1)
+        y = np.column_stack((x[:, 0], x[:, 0] ** 2))
+        engine = AdaptiveBlackBox(epochs=2).fit(
+            x,
+            y,
+            validation_folds=2,
+            target_names=["yield", "cost"],
+            output_weights={"cost": 1.0, "yield": 3.0},
+        )
+        np.testing.assert_allclose(engine.output_weights, [0.75, 0.25])
