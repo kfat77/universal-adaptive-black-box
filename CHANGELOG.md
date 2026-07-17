@@ -9,6 +9,7 @@ All notable changes are documented in this file. This project follows the princi
 - Nested and group-safe nested validation, tiered search budgets, and optional MLP learning-rate scheduling.
 - Split-conformal calibration, finite-sample intervals, distribution-drift reporting, and model-agnostic explanations.
 - DataFrame-safe prediction, named output weights, structured inverse targets, and sampled Pareto inverse design.
+- Affine inverse constraints, group-safe split-conformal calibration, and multi-output gradient-boosting search support.
 - Reproducible local benchmarks with measured CSV results, Windows CI, coverage enforcement, and additional examples.
 
 ### Changed
