@@ -2,7 +2,7 @@
 
 All notable changes are documented in this file. This project follows the principles of [Keep a Changelog](https://keepachangelog.com/) and uses semantic versioning for published releases.
 
-## [0.3.1] - Unreleased
+## [0.3.1] - 2026-07-17
 
 ### Fixed
 
