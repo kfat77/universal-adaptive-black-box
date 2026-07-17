@@ -57,6 +57,18 @@ class SingleOutputRegressionTest(unittest.TestCase):
         ).fit(X, X, validation_folds=2)
         self.assertEqual(model.mlp_config["scheduler_patience"], 1)
 
+    def test_mlp_early_stopping_split_respects_group_and_time_order(self) -> None:
+        model = AdaptiveBlackBox()
+        groups = np.repeat(np.arange(10), 4)
+        group_train, group_validation = model._early_stopping_split(
+            len(groups), seed=3, groups=groups, validation_strategy="group_kfold"
+        )
+        self.assertFalse(set(groups[group_train]) & set(groups[group_validation]))
+        time_train, time_validation = model._early_stopping_split(
+            len(groups), seed=3, groups=None, validation_strategy="time_series"
+        )
+        self.assertLess(max(time_train), min(time_validation))
+
     def test_dataframe_prediction_reorders_known_columns_and_rejects_schema_drift(self) -> None:
         X = pd.DataFrame({"temperature": np.linspace(-1.0, 1.0, 24), "pressure": 2.0})
         Y = pd.DataFrame({"yield": 2.0 * X["temperature"] + X["pressure"]})

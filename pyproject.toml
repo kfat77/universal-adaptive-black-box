@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "numerical-surrogate-toolkit"
-version = "0.3.0"
+version = "0.3.1"
 description = "Numerical surrogate modeling with forward prediction and bounded inverse design."
 readme = "README.md"
 requires-python = ">=3.10"

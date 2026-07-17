@@ -8,7 +8,7 @@ import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import sklearn
@@ -21,7 +21,13 @@ from sklearn.ensemble import (
     RandomForestRegressor,
 )
 from sklearn.linear_model import LinearRegression, Ridge
-from sklearn.model_selection import GroupShuffleSplit, RandomizedSearchCV, train_test_split
+from sklearn.model_selection import (
+    GroupKFold,
+    GroupShuffleSplit,
+    RandomizedSearchCV,
+    TimeSeriesSplit,
+    train_test_split,
+)
 from sklearn.multioutput import MultiOutputRegressor
 from sklearn.preprocessing import StandardScaler
 from torch import nn
@@ -31,7 +37,7 @@ from .metrics import compute_regression_metrics, validate_output_weights
 from .validation import build_splits
 
 ARTIFACT_VERSION = 2
-PACKAGE_VERSION = "0.3.0"
+PACKAGE_VERSION = "0.3.1"
 CANDIDATE_MODELS = (
     "dummy",
     "linear_regression",
@@ -127,7 +133,43 @@ class AdaptiveBlackBox:
             raise ValueError(f"{name} must be a non-empty, finite 2D numerical array.")
         return array
 
-    def _fit_mlp(self, X: np.ndarray, Y: np.ndarray, seed: int) -> MLP:
+    @staticmethod
+    def _early_stopping_split(
+        n_samples: int,
+        seed: int,
+        groups: np.ndarray | None,
+        validation_strategy: str,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Split MLP early-stopping rows without violating group or time semantics."""
+        validation_size = max(1, int(n_samples * 0.1)) if n_samples >= 10 else 0
+        indices = np.arange(n_samples)
+        if validation_size == 0:
+            return indices, np.array([], dtype=int)
+        if validation_strategy in {"group_kfold", "leave_one_group_out"}:
+            if groups is None or np.asarray(groups).shape != (n_samples,):
+                raise ValueError("Group-aware MLP early stopping requires one group label per row.")
+            if len(np.unique(groups)) < 2:
+                raise ValueError("Group-aware MLP early stopping requires at least two groups.")
+            return next(
+                GroupShuffleSplit(
+                    n_splits=1,
+                    test_size=validation_size / n_samples,
+                    random_state=seed,
+                ).split(indices, groups=groups)
+            )
+        if validation_strategy == "time_series":
+            return indices[:-validation_size], indices[-validation_size:]
+        permutation = np.random.default_rng(seed).permutation(indices)
+        return permutation[validation_size:], permutation[:validation_size]
+
+    def _fit_mlp(
+        self,
+        X: np.ndarray,
+        Y: np.ndarray,
+        seed: int,
+        groups: np.ndarray | None = None,
+        validation_strategy: str = "kfold",
+    ) -> MLP:
         """Fit one standardized MLP candidate and return it in evaluation mode."""
         torch.manual_seed(seed)
         assert self.input_dim is not None and self.output_dim is not None
@@ -155,11 +197,8 @@ class AdaptiveBlackBox:
         )
         x_tensor = torch.tensor(X, dtype=torch.float32)
         y_tensor = torch.tensor(Y, dtype=torch.float32)
-        validation_size = max(1, int(len(X) * 0.1)) if len(X) >= 10 else 0
-        permutation = torch.randperm(len(X), generator=torch.Generator().manual_seed(seed))
-        validation_indices, training_indices = (
-            permutation[:validation_size],
-            permutation[validation_size:],
+        training_indices, validation_indices = self._early_stopping_split(
+            len(X), seed, groups, validation_strategy
         )
         training_data = TensorDataset(x_tensor[training_indices], y_tensor[training_indices])
         loader = DataLoader(
@@ -179,7 +218,7 @@ class AdaptiveBlackBox:
             with torch.no_grad():
                 check_x, check_y = (
                     (x_tensor[validation_indices], y_tensor[validation_indices])
-                    if validation_size
+                    if len(validation_indices)
                     else (x_tensor, y_tensor)
                 )
                 validation_loss = float(nn.functional.mse_loss(model(check_x), check_y))
@@ -223,7 +262,19 @@ class AdaptiveBlackBox:
         return MultiOutputRegressor(base_model).fit(X, Y)
 
     def _fit_candidate(
-        self, model_name: str, X: np.ndarray, Y: np.ndarray, seed: int, search_mode: str = "fast"
+        self,
+        model_name: str,
+        X: np.ndarray,
+        Y: np.ndarray,
+        seed: int,
+        search_mode: str = "fast",
+        selection_metric: str | None = None,
+        output_weights: np.ndarray | None = None,
+        normalization_scales: np.ndarray | None = None,
+        target_mean: np.ndarray | None = None,
+        target_scale: np.ndarray | None = None,
+        groups: np.ndarray | None = None,
+        validation_strategy: str = "kfold",
     ) -> Any:
         registry = {
             "dummy": lambda: self._fit_sklearn(DummyRegressor(strategy="mean"), X, Y),
@@ -231,7 +282,7 @@ class AdaptiveBlackBox:
             "ridge": lambda: self._fit_sklearn(
                 Ridge(alpha=1.0, random_state=self.random_state), X, Y
             ),
-            "mlp": lambda: self._fit_mlp(X, Y, seed),
+            "mlp": lambda: self._fit_mlp(X, Y, seed, groups, validation_strategy),
             "random_forest": lambda: self._fit_forest(X, Y),
             "extra_trees": lambda: self._fit_extra_trees(X, Y),
             "hist_gradient_boosting": lambda: self._fit_gradient_boosting(X, Y),
@@ -252,21 +303,83 @@ class AdaptiveBlackBox:
             parameter_space = {
                 f"estimator__{name}": values for name, values in parameter_space.items()
             }
+        metric_name = selection_metric or self.selection_metric
+        weights = validate_output_weights(output_weights, self.output_dim or 1)
+        scales = (
+            np.ptp(Y, axis=0)
+            if normalization_scales is None
+            else np.asarray(normalization_scales, dtype=float)
+        )
+        location = (
+            np.zeros(self.output_dim or 1)
+            if target_mean is None
+            else np.asarray(target_mean, dtype=float)
+        )
+        scale = (
+            np.ones(self.output_dim or 1)
+            if target_scale is None
+            else np.asarray(target_scale, dtype=float)
+        )
+        if (
+            location.shape != (self.output_dim,)
+            or scale.shape != (self.output_dim,)
+            or not np.isfinite(location).all()
+            or not np.isfinite(scale).all()
+            or (scale <= 0).any()
+        ):
+            raise ValueError("Target scaling metadata must contain finite values for every output.")
+
+        def selection_scorer(
+            estimator: Any, held_out_x: np.ndarray, held_out_y: np.ndarray
+        ) -> float:
+            prediction = (
+                np.asarray(estimator.predict(held_out_x)).reshape(len(held_out_x), -1) * scale
+                + location
+            )
+            actual = np.asarray(held_out_y).reshape(len(held_out_x), -1) * scale + location
+            metric_values = compute_regression_metrics(
+                actual,
+                prediction,
+                weights,
+                normalization_scales=scales,
+            )
+            value = float(cast(float, metric_values[metric_name]))
+            return value if metric_name == "r2" else -value
+
+        cv: int | GroupKFold | TimeSeriesSplit = min(3, len(X) // 2)
+        fit_parameters: dict[str, Any] = {}
+        if validation_strategy in {"group_kfold", "leave_one_group_out"}:
+            if groups is None or np.asarray(groups).shape != (len(X),):
+                raise ValueError(
+                    "Group-aware hyperparameter search requires one group label per row."
+                )
+            n_groups = len(np.unique(groups))
+            if n_groups < 2:
+                raise ValueError("Group-aware hyperparameter search requires at least two groups.")
+            cv = GroupKFold(n_splits=min(3, n_groups))
+            fit_parameters["groups"] = groups
+        elif validation_strategy == "time_series":
+            cv = TimeSeriesSplit(n_splits=min(3, len(X) - 1))
         search = RandomizedSearchCV(
             candidate,
             parameter_space,
             n_iter=budget,
-            scoring="neg_mean_squared_error",
-            cv=min(3, len(X) // 2),
+            scoring=selection_scorer,
+            cv=cv,
             random_state=seed,
             n_jobs=1,
-        ).fit(X, Y.ravel() if self.output_dim == 1 else Y)
+        ).fit(X, Y.ravel() if self.output_dim == 1 else Y, **fit_parameters)
         self.search_details[model_name] = {
             "mode": search_mode,
             "budget": budget,
             "random_state": seed,
+            "selection_metric": metric_name,
+            "output_weights": weights.tolist(),
+            "scoring_target_units": "original",
             "best_params": search.best_params_,
-            "best_inner_score": float(search.best_score_),
+            "best_inner_score": float(
+                search.best_score_ if metric_name == "r2" else -search.best_score_
+            ),
         }
         return search.best_estimator_
 
@@ -421,7 +534,18 @@ class AdaptiveBlackBox:
                 started = perf_counter()
                 candidates[name] = (
                     self._fit_candidate(
-                        name, X_train, Y_train, self.random_state + fold, search_mode
+                        name,
+                        X_train,
+                        Y_train,
+                        self.random_state + fold,
+                        search_mode,
+                        selection_metric,
+                        self.output_weights,
+                        target_scales,
+                        y_scaler.mean_,
+                        y_scaler.scale_,
+                        None if model_groups is None else model_groups[train_index],
+                        validation_strategy,
                     ),
                     perf_counter() - started,
                 )
@@ -477,7 +601,18 @@ class AdaptiveBlackBox:
         X_full = self.x_scaler.fit_transform(X_model)
         Y_full = self.y_scaler.fit_transform(Y_model)
         self.model = self._fit_candidate(
-            self.model_name, X_full, Y_full, self.random_state, search_mode
+            self.model_name,
+            X_full,
+            Y_full,
+            self.random_state,
+            search_mode,
+            selection_metric,
+            self.output_weights,
+            target_scales,
+            self.y_scaler.mean_,
+            self.y_scaler.scale_,
+            model_groups,
+            validation_strategy,
         )
         self.training_samples = len(X_model)
         self.calibration_samples = 0 if calibration_index is None else len(calibration_index)
@@ -575,7 +710,7 @@ class AdaptiveBlackBox:
             validation_folds=validation_folds,
             output_weights=output_weights,
             selection_metric=selection_metric,
-            validation_strategy="kfold",
+            validation_strategy="group_kfold" if groups is not None else "kfold",
             groups=groups,
             feature_names=feature_names,
             target_names=target_names,

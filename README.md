@@ -183,7 +183,7 @@ Additional engine methods are `compare_data_distribution` (reports drift without
 
 ## Model Evaluation
 
-The default selection metric is normalized RMSE so large-scale outputs do not dominate a multi-output task. Use `output_weights` to express relative output importance and `selection_metric` to select a different supported metric.
+The default selection metric is normalized RMSE so large-scale outputs do not dominate a multi-output task. Use `output_weights` to express relative output importance and `selection_metric` to select a different supported metric. The `balanced` and `thorough` search budgets optimize that same metric with those same weights. MLP early stopping preserves group boundaries for group validation and uses the latest rows for time-series validation.
 
 ## Limitations and Safety
 
