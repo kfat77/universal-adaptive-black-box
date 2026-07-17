@@ -1,6 +1,6 @@
 # Benchmarks
 
-`run_benchmarks.py` compares the toolkit's selected surrogate against the included dummy baseline on small synthetic numerical problems. It is a reproducible smoke benchmark, not evidence of performance on a domain dataset.
+`run_benchmarks.py` evaluates every candidate, including baselines, on local Friedman1, Diabetes, synthetic linear/nonlinear, and multi-output datasets. It writes measured results to `results/example_results.csv`. It is a reproducible smoke benchmark, not evidence of performance on a domain dataset.
 
 ```powershell
 python benchmarks/run_benchmarks.py
