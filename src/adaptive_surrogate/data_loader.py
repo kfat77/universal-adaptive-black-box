@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 import numpy as np
 
@@ -25,25 +25,28 @@ def _column_names(columns: str | Sequence[str], name: str) -> tuple[str, ...]:
 
 
 def load_tabular_data(
-    path: str | Path,
+    source: str | Path | Any,
     target_columns: str | Sequence[str],
     feature_columns: str | Sequence[str] | None = None,
     sheet_name: str | int = 0,
 ) -> TabularDataset:
-    """Load finite numerical feature and target columns from CSV or Excel.
+    """Validate selected numerical columns from a DataFrame, CSV, or Excel file.
 
     When ``feature_columns`` is omitted, every column except the selected targets
     becomes an input feature. Excel files use ``sheet_name``; it is ignored for CSV.
     """
-    path = Path(path)
     import pandas as pd
 
-    if path.suffix.lower() == ".csv":
-        frame = pd.read_csv(path)
-    elif path.suffix.lower() in {".xls", ".xlsx"}:
-        frame = pd.read_excel(path, sheet_name=sheet_name)
+    if isinstance(source, pd.DataFrame):
+        frame = source.copy()
     else:
-        raise ValueError("Only .csv, .xls, and .xlsx files are supported.")
+        path = Path(source)
+        if path.suffix.lower() == ".csv":
+            frame = pd.read_csv(path)
+        elif path.suffix.lower() in {".xls", ".xlsx"}:
+            frame = pd.read_excel(path, sheet_name=sheet_name)
+        else:
+            raise ValueError("source must be a pandas DataFrame or a .csv, .xls, or .xlsx file.")
 
     if frame.columns.duplicated().any():
         raise ValueError("Source column names must be unique.")

@@ -13,6 +13,7 @@ from typing import Any
 import numpy as np
 import sklearn
 import torch
+from scipy.stats import wasserstein_distance
 from sklearn.dummy import DummyRegressor
 from sklearn.ensemble import (
     ExtraTreesRegressor,
@@ -105,6 +106,8 @@ class AdaptiveBlackBox:
         self.training_x_scaled: np.ndarray | None = None
         self.training_feature_min: np.ndarray | None = None
         self.training_feature_max: np.ndarray | None = None
+        self.training_feature_mean: np.ndarray | None = None
+        self.training_feature_std: np.ndarray | None = None
         self.ood_distance_threshold: float | None = None
 
     @staticmethod
@@ -249,6 +252,8 @@ class AdaptiveBlackBox:
         Optional feature and target names are persisted with the artifact so callers
         can retain the tabular-data schema used during training.
         """
+        inferred_feature_names = self._column_names_from_dataframe(X)
+        inferred_target_names = self._column_names_from_dataframe(Y)
         X, Y = self._as_2d(X, "X"), self._as_2d(Y, "Y")
         if len(X) != len(Y):
             raise ValueError("X and Y must have the same number of rows.")
@@ -259,8 +264,16 @@ class AdaptiveBlackBox:
         self.output_weights = validate_output_weights(output_weights, self.output_dim)
         self.selection_metric = selection_metric
         self.validation_strategy = validation_strategy
-        self.feature_names = self._validate_names(feature_names, self.input_dim, "feature_names")
-        self.target_names = self._validate_names(target_names, self.output_dim, "target_names")
+        self.feature_names = self._validate_names(
+            feature_names if feature_names is not None else inferred_feature_names,
+            self.input_dim,
+            "feature_names",
+        )
+        self.target_names = self._validate_names(
+            target_names if target_names is not None else inferred_target_names,
+            self.output_dim,
+            "target_names",
+        )
         scores: dict[str, list[dict[str, Any]]] = {name: [] for name in CANDIDATE_MODELS}
         residuals: dict[str, list[np.ndarray]] = {name: [] for name in CANDIDATE_MODELS}
         target_scales = np.ptp(Y, axis=0)
@@ -344,10 +357,20 @@ class AdaptiveBlackBox:
         self.training_x_scaled = X_full
         self.training_feature_min = X.min(axis=0)
         self.training_feature_max = X.max(axis=0)
+        self.training_feature_mean = X.mean(axis=0)
+        self.training_feature_std = X.std(axis=0)
         distances = np.linalg.norm(X_full[:, None, :] - X_full[None, :, :], axis=2)
         np.fill_diagonal(distances, np.inf)
         self.ood_distance_threshold = float(np.quantile(np.min(distances, axis=1), 0.95))
         return self
+
+    @staticmethod
+    def _column_names_from_dataframe(values: Any) -> tuple[str, ...] | None:
+        """Return DataFrame column names without making pandas a hard dependency."""
+        columns = getattr(values, "columns", None)
+        if columns is None:
+            return None
+        return tuple(columns.tolist())
 
     @staticmethod
     def _validate_names(
@@ -370,6 +393,16 @@ class AdaptiveBlackBox:
         """Run forward solving: map unseen input vectors X directly to outputs Y."""
         if self.model is None or self.input_dim is None:
             raise RuntimeError("Train or load a model before predicting.")
+        incoming_names = self._column_names_from_dataframe(X_new)
+        if incoming_names is not None and self.feature_names is not None:
+            missing = sorted(set(self.feature_names) - set(incoming_names))
+            extra = sorted(set(incoming_names) - set(self.feature_names))
+            if missing or extra:
+                raise ValueError(
+                    f"DataFrame prediction columns must match training features; missing={missing}, extra={extra}."
+                )
+            dataframe: Any = X_new
+            X_new = dataframe.loc[:, list(self.feature_names)]
         X_new = self._as_2d(X_new, "X_new")
         if X_new.shape[1] != self.input_dim:
             raise ValueError(f"X_new must contain {self.input_dim} columns.")
@@ -405,12 +438,72 @@ class AdaptiveBlackBox:
         )
         outside = (values < self.training_feature_min) | (values > self.training_feature_max)
         in_distribution = (nearest <= self.ood_distance_threshold) & ~outside.any(axis=1)
+        score = nearest / max(self.ood_distance_threshold, np.finfo(float).eps)
+        risk_level = np.where(score > 2.0, "high", np.where(score > 1.0, "medium", "low"))
+        explanation = np.array(
+            [
+                "one or more features are outside the training range"
+                if row_outside.any()
+                else "nearest-neighbour distance is above the training threshold"
+                if row_score > 1.0
+                else "within feature ranges and nearest-neighbour threshold"
+                for row_outside, row_score in zip(outside, score, strict=True)
+            ],
+            dtype=object,
+        )
         return {
             "nearest_training_distance": nearest,
             "features_outside_training_range": outside,
-            "extrapolation_score": nearest / max(self.ood_distance_threshold, np.finfo(float).eps),
+            "extrapolation_score": score,
             "in_distribution": in_distribution,
+            "risk_level": risk_level,
+            "explanation": explanation,
         }
+
+    def compare_data_distribution(
+        self, X_reference: np.ndarray, X_new: np.ndarray
+    ) -> dict[str, Any]:
+        """Compare feature distributions; this reports drift and never adapts the model.
+
+        Inputs must preserve the same feature order used for training. Mean shifts are
+        reported in reference-standard-deviation units and Wasserstein distances are
+        reported in original feature units.
+        """
+        reference, new = self._as_2d(X_reference, "X_reference"), self._as_2d(X_new, "X_new")
+        if (
+            self.input_dim is None
+            or reference.shape[1] != self.input_dim
+            or new.shape[1] != self.input_dim
+        ):
+            raise ValueError(f"Both datasets must contain {self.input_dim} feature columns.")
+        reference_mean = reference.mean(axis=0)
+        reference_std = reference.std(axis=0)
+        stable_std = np.where(reference_std > np.finfo(float).eps, reference_std, 1.0)
+        assessment = self.assess_distribution(new)
+        return {
+            "feature_mean_shift": (new.mean(axis=0) - reference_mean) / stable_std,
+            "feature_std_ratio": new.std(axis=0) / stable_std,
+            "feature_wasserstein_distance": np.array(
+                [
+                    wasserstein_distance(reference[:, column], new[:, column])
+                    for column in range(self.input_dim)
+                ]
+            ),
+            "feature_range_shift": (new.min(axis=0) < reference.min(axis=0))
+            | (new.max(axis=0) > reference.max(axis=0)),
+            "ood_rate": float(1.0 - np.mean(assessment["in_distribution"])),
+            "note": "This report detects distribution change; it does not update or adapt the model.",
+        }
+
+    def refit(self, X: np.ndarray, Y: np.ndarray, **fit_options: Any) -> "AdaptiveBlackBox":
+        """Explicitly retrain on updated data; this is not online learning."""
+        return self.fit(X, Y, **fit_options)
+
+    def recommend_next_experiments(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        """Recommend candidate experiments without executing them in the real world."""
+        from .active_learning import recommend_next_experiments
+
+        return recommend_next_experiments(self, *args, **kwargs)
 
     def save(self, path: str | Path) -> None:
         """Persist the selected model, scalers, dimensions, and comparison metrics."""

@@ -56,6 +56,13 @@ class DataLoaderTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 load_tabular_data(path, target_columns="y")
 
+    def test_accepts_dataframe_and_rejects_overlapping_columns(self) -> None:
+        frame = pd.DataFrame({"x": [1.0, 2.0], "y": [3.0, 4.0]})
+        dataset = load_tabular_data(frame, target_columns="y")
+        self.assertEqual(dataset.feature_names, ("x",))
+        with self.assertRaises(ValueError):
+            load_tabular_data(frame, target_columns="y", feature_columns=["x", "y"])
+
 
 if __name__ == "__main__":
     unittest.main()

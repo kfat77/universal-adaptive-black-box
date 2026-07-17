@@ -1,6 +1,6 @@
 """Numerical inverse solving for forward models that do not have analytic inverses."""
 
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 import numpy as np
 from scipy.optimize import differential_evolution, minimize
@@ -27,6 +27,7 @@ class InverseSolver:
         reference_x: np.ndarray | None = None,
         distance_penalty: float = 0.0,
         ood_penalty: float = 0.0,
+        target_spec: dict[int | str, dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         """Find inputs whose forward prediction is close to ``Y_target``.
 
@@ -100,6 +101,10 @@ class InverseSolver:
             reference.shape != (self.model.input_dim,) or not np.isfinite(reference).all()
         ):
             raise ValueError("reference_x must contain one finite value per input.")
+        resolved_target_spec = self._resolve_target_spec(target_spec)
+        for output_index, spec in resolved_target_spec.items():
+            if "target" in spec:
+                target[0, output_index] = float(cast(float, spec["target"]))
         effective_bounds: list[tuple[float, float]] = []
         for index, bound in enumerate(bounds):
             if index in fixed:
@@ -127,12 +132,29 @@ class InverseSolver:
                     violation += max(0.0, -value)
             return violation
 
+        def target_error_for(prediction: np.ndarray) -> np.ndarray:
+            error = np.abs(prediction - target[0])
+            for output_index, spec in resolved_target_spec.items():
+                if "between" in spec:
+                    lower, upper = cast(tuple[float, float], spec["between"])
+                    error[output_index] = max(lower - prediction[output_index], 0.0) + max(
+                        prediction[output_index] - upper, 0.0
+                    )
+                elif "min" in spec:
+                    error[output_index] = max(
+                        float(cast(float, spec["min"])) - prediction[output_index], 0.0
+                    )
+                elif "max" in spec:
+                    error[output_index] = max(
+                        prediction[output_index] - float(cast(float, spec["max"])), 0.0
+                    )
+            return error
+
         def objective(x: np.ndarray) -> float:
             candidate = apply_fixed(x)
-            residual = self.model.predict(candidate.reshape(1, -1)) - target
-            target_loss = float(
-                np.average(residual.reshape(-1) ** 2, weights=self.model.output_weights)
-            )
+            prediction = self.model.predict(candidate.reshape(1, -1))[0]
+            residual = target_error_for(prediction)
+            target_loss = float(np.average(residual**2, weights=self.model.output_weights))
             violation = constraint_violation(candidate)
             reference_loss = (
                 0.0 if reference is None else solution_distance(candidate, reference) ** 2
@@ -156,7 +178,7 @@ class InverseSolver:
             return float(np.linalg.norm(difference))
 
         answers: list[dict[str, Any]] = []
-        attempts = max_attempts if max_attempts is not None else n_solutions * 5
+        attempts = int(max_attempts if max_attempts is not None else n_solutions * 5)
         if attempts < n_solutions:
             raise ValueError("max_attempts must be at least n_solutions.")
         for attempt in range(attempts):
@@ -173,10 +195,8 @@ class InverseSolver:
                 continue
             prediction = self.model.predict(x_solution[None, :])[0]
             assessment = self.model.assess_distribution(x_solution[None, :])
-            target_error = np.abs(prediction - target[0])
-            target_loss = float(
-                np.average((prediction - target[0]) ** 2, weights=self.model.output_weights)
-            )
+            target_error = target_error_for(prediction)
+            target_loss = float(np.average(target_error**2, weights=self.model.output_weights))
             violation = constraint_violation(x_solution)
             reference_loss = (
                 0.0 if reference is None else solution_distance(x_solution, reference) ** 2
@@ -195,7 +215,7 @@ class InverseSolver:
                     "x": x_solution,
                     "predicted_y": prediction,
                     "target_error": target_error,
-                    "mse": float(np.mean((prediction - target[0]) ** 2)),
+                    "mse": float(np.mean(target_error**2)),
                     "weighted_loss": weighted_loss,
                     "constraint_violation": violation,
                     "reference_distance": reference_loss**0.5,
@@ -220,3 +240,49 @@ class InverseSolver:
             if len(answers) == n_solutions:
                 break
         return sorted(answers, key=lambda answer: float(answer["weighted_loss"]))
+
+    def _resolve_target_spec(
+        self, target_spec: dict[int | str, dict[str, Any]] | None
+    ) -> dict[int, dict[str, float | tuple[float, float]]]:
+        """Validate structured exact, minimum, maximum, or interval output targets."""
+        if target_spec is None:
+            return {}
+        if self.model.output_dim is None:
+            raise RuntimeError("Load a trained model before resolving inverse targets.")
+        output_dim = self.model.output_dim
+        resolved: dict[int, dict[str, float | tuple[float, float]]] = {}
+        for output, raw_spec in target_spec.items():
+            if isinstance(output, str):
+                if self.model.target_names is None or output not in self.model.target_names:
+                    raise ValueError(f"Unknown target name in target_spec: {output}")
+                index = self.model.target_names.index(output)
+            elif isinstance(output, int) and 0 <= output < output_dim:
+                index = output
+            else:
+                raise ValueError(
+                    "target_spec keys must be valid output indices or saved target names."
+                )
+            if index in resolved or not isinstance(raw_spec, dict):
+                raise ValueError("target_spec entries must be unique dictionaries.")
+            allowed = {"target", "min", "max", "between"}
+            keys = set(raw_spec)
+            if not keys or keys - allowed or len(keys) != 1:
+                raise ValueError(
+                    "Each target_spec entry must contain exactly one of target, min, max, between."
+                )
+            key = next(iter(keys))
+            value = raw_spec[key]
+            if key == "between":
+                interval = np.asarray(value, dtype=float)
+                if (
+                    interval.shape != (2,)
+                    or not np.isfinite(interval).all()
+                    or interval[0] > interval[1]
+                ):
+                    raise ValueError("between targets must contain finite [lower, upper] values.")
+                resolved[index] = {key: (float(interval[0]), float(interval[1]))}
+            elif not np.isfinite(float(value)):
+                raise ValueError(f"{key} targets must be finite.")
+            else:
+                resolved[index] = {key: float(value)}
+        return resolved
