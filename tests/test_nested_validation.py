@@ -18,3 +18,11 @@ class NestedValidationTest(unittest.TestCase):
         self.assertIn("nrmse", engine.metrics[engine.model_name])
         self.assertIsNotNone(engine.outer_evaluation_metrics)
         self.assertEqual(len(engine.outer_evaluation_metrics["fold_metrics"]), 2)
+
+    def test_nested_group_validation_preserves_groups_inside_inner_selection(self) -> None:
+        x = np.linspace(-1.0, 1.0, 24).reshape(-1, 1)
+        groups = np.repeat(np.arange(6), 4)
+        engine = AdaptiveBlackBox(epochs=1).fit(
+            x, x**2, validation_folds=2, validation_strategy="nested", groups=groups
+        )
+        self.assertEqual(engine.validation_strategy, "nested")

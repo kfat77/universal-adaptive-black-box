@@ -8,7 +8,7 @@
 
 ## Project Overview
 
-Numerical Surrogate Toolkit learns regression-based surrogate models from numerical tabular data when an explicit input-output equation is unavailable or impractical. It compares several candidate regressors with cross-validation, refits the selected surrogate on all observations, and supports prediction and bounded inverse design.
+Numerical Surrogate Toolkit learns regression-based surrogate models from numerical tabular data when an explicit input-output equation is unavailable or impractical. It compares several candidate regressors with cross-validation, refits the selected surrogate on all observations (or development observations when split conformal calibration is requested), and supports prediction and bounded inverse design.
 
 The project is intentionally limited to supervised regression on numerical tabular data. It is not a universal black-box system or a general machine-learning framework.
 
@@ -159,8 +159,11 @@ Experiment recommendations do not execute experiments. Pareto filtering operates
 The executable examples use only synthetic data and are available in [`examples/`](examples):
 
 - `basic_workflow.py` — train, compare, and predict.
+- `linear_baseline.py` — compare Dummy, linear, and Ridge baselines.
+- `multi_output.py` — train a named multi-output model with output weights.
 - `constrained_inverse_design.py` — save an artifact and search with a constraint and preference penalty.
 - `uncertainty_ood_active_learning.py` — inspect intervals, OOD indicators, and candidate experiment suggestions.
+- `pareto_design.py` — filter a predicted multi-objective candidate pool to a Pareto front.
 
 Run the original end-to-end sine demonstration with `python main.py`.
 

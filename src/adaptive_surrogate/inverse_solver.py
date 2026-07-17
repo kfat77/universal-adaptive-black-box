@@ -89,12 +89,12 @@ class InverseSolver:
         assessment = self.model.assess_distribution(candidates)
         objective_values = prediction[:, indices]
         front = non_dominated_mask(objective_values, directions)
-        selected = np.flatnonzero(front)[:max_solutions]
         factors = np.array([1.0 if direction == "minimize" else -1.0 for direction in directions])
         normalized = (objective_values - objective_values.min(axis=0)) / np.maximum(
             np.ptp(objective_values, axis=0), np.finfo(float).eps
         )
         scalarized = normalized @ (np.asarray(weights) * factors)
+        selected = np.flatnonzero(front)[np.argsort(scalarized[front])][:max_solutions]
         return [
             {
                 "x": candidates[index],

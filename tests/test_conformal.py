@@ -26,3 +26,11 @@ class ConformalTest(unittest.TestCase):
         x = np.arange(8.0).reshape(-1, 1)
         with self.assertRaisesRegex(ValueError, "at least 10"):
             AdaptiveBlackBox(epochs=1).fit(x, x, uncertainty_method="split_conformal")
+
+    def test_split_conformal_uses_finite_sample_order_statistic(self) -> None:
+        x = np.linspace(-1.0, 1.0, 20).reshape(-1, 1)
+        engine = AdaptiveBlackBox(epochs=1).fit(x, x, validation_folds=2)
+        engine.uncertainty_method = "split_conformal"
+        engine.calibration_residuals = np.array([[1.0], [2.0], [3.0]])
+        prediction, _, upper = engine.predict_interval([[0.0]], confidence=0.75)
+        np.testing.assert_allclose(upper - prediction, [[3.0]])

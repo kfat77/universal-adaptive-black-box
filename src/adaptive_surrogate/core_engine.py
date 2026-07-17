@@ -321,6 +321,7 @@ class AdaptiveBlackBox:
                 target_names=target_names,
                 uncertainty_method=uncertainty_method,
                 calibration_fraction=calibration_fraction,
+                search_mode=search_mode,
             )
         inferred_feature_names = self._column_names_from_dataframe(X)
         inferred_target_names = self._column_names_from_dataframe(Y)
@@ -487,6 +488,7 @@ class AdaptiveBlackBox:
         target_names: list[str] | tuple[str, ...] | None,
         uncertainty_method: str,
         calibration_fraction: float,
+        search_mode: str,
     ) -> "AdaptiveBlackBox":
         """Estimate unbiased outer-fold performance before final full-data selection.
 
@@ -531,9 +533,11 @@ class AdaptiveBlackBox:
                 validation_folds=validation_folds,
                 output_weights=weights,
                 selection_metric=selection_metric,
-                validation_strategy="kfold",
+                validation_strategy="group_kfold" if groups is not None else "kfold",
+                groups=None if groups is None else np.asarray(groups)[train_index],
                 uncertainty_method=uncertainty_method,
                 calibration_fraction=calibration_fraction,
+                search_mode=search_mode,
             )
             evaluation: dict[str, Any] = compute_regression_metrics(
                 raw_y[test_index],
@@ -555,6 +559,7 @@ class AdaptiveBlackBox:
             target_names=target_names,
             uncertainty_method=uncertainty_method,
             calibration_fraction=calibration_fraction,
+            search_mode=search_mode,
         )
         self.validation_strategy = "nested"
         self.outer_evaluation_metrics = (
@@ -629,7 +634,14 @@ class AdaptiveBlackBox:
         if not 0 < confidence < 1 or self.calibration_residuals is None:
             raise ValueError("confidence must be between 0 and 1 after fitting the model.")
         prediction = self.predict(X_new)
-        radius = np.quantile(self.calibration_residuals, confidence, axis=0)
+        if self.uncertainty_method == "split_conformal":
+            rank = min(
+                len(self.calibration_residuals),
+                int(np.ceil((len(self.calibration_residuals) + 1) * confidence)),
+            )
+            radius = np.partition(self.calibration_residuals, rank - 1, axis=0)[rank - 1]
+        else:
+            radius = np.quantile(self.calibration_residuals, confidence, axis=0)
         return prediction, prediction - radius, prediction + radius
 
     def assess_distribution(self, X_new: np.ndarray) -> dict[str, np.ndarray]:
