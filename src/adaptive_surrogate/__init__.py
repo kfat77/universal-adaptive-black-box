@@ -8,7 +8,7 @@ from .forward_solver import ForwardSolver
 from .inverse_solver import InverseSolver
 from .pareto import non_dominated_mask
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 __all__ = [
     "AdaptiveBlackBox",
