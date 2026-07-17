@@ -1,135 +1,219 @@
-# Universal Adaptive Black-Box Engine
+# Numerical Surrogate Toolkit
 
-Train a numerical input-to-output model directly from data, then use the same saved artifact for forward prediction and inverse solving.
+> Cross-validated numerical surrogate models for forward prediction, uncertainty assessment, and constrained inverse design.
 
-The project is intended for problems where you have measured numerical samples but no reliable physical formula. It compares a neural-network model with a statistical tree-ensemble model, selects the candidate with the lowest validation mean-squared error (MSE), and saves the winner.
+## Project Overview
 
-## What it does
+Numerical Surrogate Toolkit learns regression-based surrogate models from numerical tabular data when an explicit input-output equation is unavailable or impractical. It compares several candidate regressors with cross-validation, refits the selected surrogate on all observations, and supports prediction and bounded inverse design.
 
-- Accepts multi-dimensional numerical inputs `X` with shape `(N, D_in)` and targets `Y` with shape `(N, D_out)`.
-- Uses reproducible shuffled K-fold cross-validation to compare candidates.
-- Trains four complementary candidates: a PyTorch MLP, random forest, Extra Trees, and histogram gradient boosting.
-- Selects the model with the lowest mean validation MSE, reports MSE/R² variation across folds, then refits the winner on all supplied data.
-- Records the number of samples used for the final refit as `training_samples`.
-- Performs forward prediction: `X -> Y`.
-- Performs bounded inverse solving: find distinct `X` values whose prediction is close to a target `Y`, with optimization diagnostics.
-- Supports single- and multi-output targets.
+The project is intentionally limited to supervised regression on numerical tabular data. It is not a universal black-box system or a general machine-learning framework.
 
-## Quick start
+## Why This Project Exists
+
+Researchers and engineers often have measured or simulated data but need a fast approximation for prediction, parameter search, or experimental design. This toolkit provides a small, inspectable workflow for that setting without requiring users to start from a physical formula.
+
+## Key Features
+
+- Numerical CSV, XLS, XLSX, NumPy, and multi-output regression workflows
+- Dummy, linear, Ridge, MLP, random forest, Extra Trees, and histogram gradient-boosting candidates
+- K-fold, repeated K-fold, grouped, leave-one-group-out, time-series, and holdout validation
+- Scale-aware MSE, RMSE, MAE, R2, and normalized RMSE metrics with output weights
+- Cross-validation residual prediction intervals and nearest-neighbour OOD assessment
+- Bounded inverse design with tolerances, constraints, fixed variables, reference distance, and OOD penalties
+- Active-learning recommendations and Pareto non-dominated filtering
+- Versioned, metadata-rich model artifacts with legacy v1 loading support
+
+## Supported Scope
+
+| Area | Support |
+| --- | --- |
+| Data | Numerical tabular inputs and continuous targets |
+| Learning | Supervised single- and multi-output regression |
+| Prediction | Point prediction and residual-calibrated intervals |
+| Inverse design | Bounded continuous optimization with callable constraints |
+| Validation | KFold, RepeatedKFold, GroupKFold, LeaveOneGroupOut, TimeSeriesSplit, holdout |
+
+## Unsupported Scope
+
+| Area | Status |
+| --- | --- |
+| Images, audio, text, NLP, classification | Not supported |
+| Reinforcement, online, or causal learning | Not supported |
+| Symbolic regression and equation discovery | Not supported |
+| Discrete/categorical optimization | Not supported |
+| Physical feasibility or causal guarantees | Not provided |
+
+## Intended Users
+
+This toolkit is for researchers and engineers working with numerical experiments, simulation outputs, materials, manufacturing, biomedical measurements, and process-optimization data. It is not suitable for unvalidated high-stakes deployment, media data, time-series forecasting, or problems requiring a causal or physical proof.
+
+## Architecture
+
+```mermaid
+flowchart TD
+    A[Dataset] --> B[Validation Strategy]
+    B --> C[Candidate Models]
+    C --> D[Model Comparison]
+    D --> E[Selected Surrogate]
+    E --> F[Final Refit]
+    F --> G[Saved Artifact]
+    G --> H[Forward Prediction]
+    G --> I[Prediction Interval]
+    G --> J[OOD Assessment]
+    G --> K[Constrained Inverse Design]
+```
+
+## Installation
 
 Requires Python 3.10 or later.
 
 ```powershell
 git clone https://github.com/kfat77/universal-adaptive-black-box.git
 cd universal-adaptive-black-box
-python -m pip install -r requirements.txt
-python main.py
+python -m pip install -e .[excel]
 ```
 
-`main.py` generates noisy sine-wave observations, trains the engine, predicts at a new input, and finds two inputs that produce a target output close to `0.5`.
-
-## Use with your data
-
-Your arrays must contain only finite numeric values. Rows are observations; columns are features or output dimensions.
-
-```python
-from pathlib import Path
-
-import numpy as np
-
-from src.core_engine import AdaptiveBlackBox
-from src.data_loader import load_tabular_data
-from src.forward_solver import ForwardSolver
-from src.inverse_solver import InverseSolver
-
-# Example: 1,000 observations, 3 numerical inputs, and 2 outputs.
-# CSV or Excel: select targets by column name. All other columns become features.
-dataset = load_tabular_data("experiment.xlsx", target_columns=["yield", "purity"])
-X, Y = dataset.X, dataset.Y
-print(dataset.feature_names, dataset.target_names)
-artifact_path = Path("artifacts/my_model.joblib")
-
-# Train and persist the validation-selected model.
-engine = AdaptiveBlackBox(epochs=500).fit(X, Y)
-print(engine.model_name)
-print(engine.metrics)
-engine.save(artifact_path)
-
-# Forward solve: predict outputs from new inputs.
-forward = ForwardSolver(str(artifact_path))
-Y_prediction = forward.predict(np.array([[1.2, -0.4, 5.0]]))
-
-# Inverse solve: search within meaningful input bounds for a desired output.
-inverse = InverseSolver(str(artifact_path))
-solutions = inverse.inverse_solve(
-    Y_target=np.array([10.0, 0.75]),
-    x_bounds=[(0.0, 3.0), (-1.0, 1.0), (0.0, 10.0)],
-    n_solutions=3,
-    min_separation=0.05,
-)
-for solution in solutions:
-    print(solution)
-```
-
-`load_tabular_data` supports `.csv`, `.xls`, and `.xlsx`. Use `feature_columns=[...]` to select and order input columns explicitly, or omit it to use every non-target column. Selected columns must be numerical and finite.
-
-## How inverse solving works
-
-Most learned black-box models cannot be algebraically inverted. For a requested target `Y_target`, the engine minimizes:
-
-```text
-mean((predict(X) - Y_target)²)
-```
-
-within the `x_bounds` supplied for every input dimension. It uses differential evolution to search the global bounded space, then L-BFGS-B to refine each candidate locally. Repeated searches may find different valid inputs, which is expected when the forward relationship is not one-to-one.
-
-Choose bounds that reflect physically or operationally feasible inputs. The solver cannot distinguish an implausible solution unless that constraint is expressed through the bounds.
-
-Each returned solution contains `x`, `predicted_y`, residual `mse`, a `success` flag, total objective `evaluations`, the search `attempt`, and the optimizer `message`. Inspect `success` and `mse` before using a solution. `min_separation` prevents near-duplicate inputs using Euclidean distance in the original input units; fewer than `n_solutions` may be returned when the bounded domain does not contain enough distinct candidates.
-
-## API reference
-
-| Component | Method | Purpose |
-| --- | --- | --- |
-| `AdaptiveBlackBox` | `fit(X, Y, validation_folds=3)` | Cross-validate all candidates and select by mean validation MSE. |
-| `AdaptiveBlackBox` | `predict(X_new)` | Predict output rows from input rows. |
-| `AdaptiveBlackBox` | `save(path)` / `load(path)` | Persist and restore the selected model and scalers. |
-| `ForwardSolver` | `predict(X_new)` | Load an artifact and perform forward prediction. |
-| `InverseSolver` | `inverse_solve(Y_target, x_bounds, n_solutions=1, min_separation=...)` | Return distinct candidate inputs, predictions, residual MSE, and diagnostics. |
-
-## Project layout
-
-```text
-├── main.py                 # End-to-end sine-data demonstration
-├── requirements.txt        # Runtime dependencies
-├── LICENSE
-├── .github/workflows/test.yml
-├── src/
-│   ├── core_engine.py      # Training, validation, selection, persistence
-│   ├── data_loader.py      # CSV and Excel loading with numerical validation
-│   ├── forward_solver.py   # Forward prediction wrapper
-│   └── inverse_solver.py   # Bounded inverse optimization
-└── tests/
-    ├── test_data_loader.py
-    ├── test_inverse_solver.py
-    └── test_single_output.py
-```
-
-## Important limitations
-
-- The selected model is chosen only from the four included numerical regression candidates; optional symbolic regression and external gradient-boosting libraries are intentionally out of scope for this lightweight release.
-- Cross-validation estimates quality only when its held-out folds resemble future data; it does not replace an independent test set for high-stakes work.
-- An inverse solution is an input that fits the learned model, not proof that it is physically unique or feasible.
-- Saved artifacts use Python pickle. Load only artifacts that you created or trust.
-
-## Verification
-
-Run the included regression check:
+For development tools:
 
 ```powershell
-python -m unittest discover -s tests
+python -m pip install -e .[excel,dev]
+```
+
+## Quick Start
+
+```python
+from adaptive_surrogate import AdaptiveBlackBox
+import numpy as np
+
+X = np.linspace(-3.0, 3.0, 100).reshape(-1, 1)
+Y = np.sin(X)
+
+engine = AdaptiveBlackBox(epochs=100).fit(X, Y)
+print(engine.model_name, engine.metrics[engine.model_name]["nrmse"])
+print(engine.predict([[1.0]]))
+```
+
+When training comes from a CSV/XLS/XLSX file, pass the validated column names to
+`fit(feature_names=dataset.feature_names, target_names=dataset.target_names)` to
+store the training schema in the saved artifact.
+
+## Workflow
+
+```mermaid
+flowchart LR
+    A[Validated numerical data] --> B[Cross-validation]
+    B --> C[Fit candidate regressors]
+    C --> D[Select by validation metric]
+    D --> E[Refit selected surrogate]
+    E --> F[Save versioned artifact]
+    F --> G[Predict or assess uncertainty]
+    F --> H[Run bounded inverse design]
+    H --> I[Review candidates against domain constraints]
+```
+
+## Forward Prediction and Uncertainty
+
+```python
+prediction, lower, upper = engine.predict_interval([[1.0]], confidence=0.90)
+assessment = engine.assess_distribution([[1.0]])
+```
+
+Prediction intervals use cross-validation residuals. They rely on calibration and future data being exchangeable; they are not physical, causal, or distribution-shift guarantees.
+
+## Inverse Design
+
+```python
+from adaptive_surrogate import InverseSolver
+
+engine.save("artifacts/model.joblib")
+solver = InverseSolver("artifacts/model.joblib")
+solutions = solver.inverse_solve(
+    Y_target=[0.5],
+    x_bounds=[(-3.0, 3.0)],
+    target_tolerance=0.02,
+    constraints=[lambda x: x[0] >= -2.5],
+    reference_x=[0.0],
+    distance_penalty=0.1,
+)
+```
+
+Each inverse result includes target error, optimizer status, target-reached status, feasibility, OOD risk, constraint violation, and objective components. A result is a candidate under the learned surrogate; it does not automatically prove real-world feasibility.
+
+## Active Learning and Pareto Utilities
+
+```python
+from adaptive_surrogate import recommend_next_experiments, non_dominated_mask
+
+recommendations = recommend_next_experiments(engine, [(-3.0, 3.0)], n_recommendations=3)
+mask = non_dominated_mask([[1.0, 5.0], [2.0, 3.0]], ["minimize", "maximize"])
+```
+
+Experiment recommendations do not execute experiments. Pareto filtering operates on supplied predicted objective values.
+
+## Examples
+
+The executable examples use only synthetic data and are available in [`examples/`](examples):
+
+- `basic_workflow.py` — train, compare, and predict.
+- `constrained_inverse_design.py` — save an artifact and search with a constraint and preference penalty.
+- `uncertainty_ood_active_learning.py` — inspect intervals, OOD indicators, and candidate experiment suggestions.
+
+Run the original end-to-end sine demonstration with `python main.py`.
+
+## API Summary
+
+| Component | Main operations |
+| --- | --- |
+| `AdaptiveBlackBox` | `fit`, `predict`, `predict_interval`, `assess_distribution`, `save`, `load` |
+| `ForwardSolver` | Load an artifact and call `predict` |
+| `InverseSolver` | Load an artifact and call `inverse_solve` with bounds and optional constraints |
+| `load_tabular_data` | Validate selected numerical CSV/XLS/XLSX columns into `TabularDataset` |
+| `recommend_next_experiments` | Propose candidate locations; it never runs a physical experiment |
+| `non_dominated_mask` | Identify Pareto non-dominated rows in supplied objective values |
+
+## Model Evaluation
+
+The default selection metric is normalized RMSE so large-scale outputs do not dominate a multi-output task. Use `output_weights` to express relative output importance and `selection_metric` to select a different supported metric.
+
+## Limitations and Safety
+
+- Cross-validation does not replace an independent test set.
+- Surrogates may extrapolate poorly outside observed training data.
+- OOD scores are lightweight distance-based indicators, not proof of safety.
+- Inverse results require domain review and independent experimental validation.
+- Artifacts use pickle. Load only artifacts from trusted sources.
+
+## Development
+
+```powershell
+python -m ruff check src tests
+python -m ruff format --check src tests
+python -m mypy src/adaptive_surrogate
+python -m pytest
+python -m build
+```
+
+For compatibility notes, see the [0.1 to 0.2 migration guide](docs/migration-v0.1-to-v0.2.md). The small synthetic smoke benchmarks live in [`benchmarks/`](benchmarks); they are not domain-performance claims.
+
+## Roadmap
+
+Implemented: numerical regression, model comparison, uncertainty intervals, OOD assessment, constrained inverse design, active-learning recommendations, and Pareto filtering.
+
+Experimental: active-learning recommendation and Pareto utilities.
+
+Planned: richer objective specifications, discrete-variable optimization, more robust conformal methods, broader benchmark suites, and expanded examples.
+
+See the detailed [roadmap](ROADMAP.md) and [changelog](CHANGELOG.md).
+
+## Citation
+
+If you use this project in research, cite the repository and the exact release or commit used:
+
+```text
+kfat77. Numerical Surrogate Toolkit. GitHub repository.
+https://github.com/kfat77/universal-adaptive-black-box
 ```
 
 ## License
 
-This project is released under the [MIT License](LICENSE).
+Released under the [MIT License](LICENSE).

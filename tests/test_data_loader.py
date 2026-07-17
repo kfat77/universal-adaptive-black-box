@@ -11,11 +11,13 @@ from src.data_loader import load_tabular_data
 
 class DataLoaderTest(unittest.TestCase):
     def test_loads_csv_and_preserves_column_metadata(self) -> None:
-        frame = pd.DataFrame({
-            "temperature": [10.0, 12.0, 14.0],
-            "pressure": [1.0, 1.2, 1.4],
-            "yield": [0.3, 0.5, 0.8],
-        })
+        frame = pd.DataFrame(
+            {
+                "temperature": [10.0, 12.0, 14.0],
+                "pressure": [1.0, 1.2, 1.4],
+                "yield": [0.3, 0.5, 0.8],
+            }
+        )
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "experiment.csv"
             frame.to_csv(path, index=False)

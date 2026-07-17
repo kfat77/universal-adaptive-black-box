@@ -4,3 +4,7 @@ __pycache__/
 artifacts/
 .venv/
 venv/
+work/
+dist/
+build/
+*.egg-info/

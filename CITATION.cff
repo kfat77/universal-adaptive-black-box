@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Numerical Surrogate Toolkit"
+authors:
+  - family-names: "kfat77"
+version: "0.2.0"
+date-released: "2026-07-17"
+repository-code: "https://github.com/kfat77/universal-adaptive-black-box"
+license: MIT
