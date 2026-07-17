@@ -3,11 +3,12 @@
 from .active_learning import recommend_next_experiments
 from .core_engine import AdaptiveBlackBox
 from .data_loader import TabularDataset, load_tabular_data
+from .explainability import local_sensitivity, permutation_importance
 from .forward_solver import ForwardSolver
 from .inverse_solver import InverseSolver
 from .pareto import non_dominated_mask
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "AdaptiveBlackBox",
@@ -15,6 +16,8 @@ __all__ = [
     "InverseSolver",
     "TabularDataset",
     "load_tabular_data",
+    "local_sensitivity",
+    "permutation_importance",
     "recommend_next_experiments",
     "non_dominated_mask",
 ]

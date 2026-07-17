@@ -8,3 +8,4 @@ work/
 dist/
 build/
 *.egg-info/
+.coverage

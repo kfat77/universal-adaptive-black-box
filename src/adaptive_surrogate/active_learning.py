@@ -31,8 +31,12 @@ def recommend_next_experiments(
     candidates = rng.uniform(bounds[:, 0], bounds[:, 1], size=(n_candidates, engine.input_dim))
     prediction, lower, upper = engine.predict_interval(candidates)
     assessment = engine.assess_distribution(candidates)
-    uncertainty = np.mean(upper - lower, axis=1)
     diversity = assessment["nearest_training_distance"]
+    # Residual intervals are globally calibrated and can have equal width. Scale
+    # them by novelty to form a varying uncertainty proxy without claiming a new
+    # conformal coverage guarantee.
+    interval_width = np.mean(upper - lower, axis=1)
+    uncertainty = interval_width * (1.0 + assessment["extrapolation_score"])
     uncertainty_score = uncertainty / max(float(uncertainty.max()), np.finfo(float).eps)
     diversity_score = diversity / max(float(diversity.max()), np.finfo(float).eps)
     score = uncertainty_score if strategy == "uncertainty" else diversity_score
@@ -48,7 +52,7 @@ def recommend_next_experiments(
             "uncertainty_score": float(uncertainty_score[index]),
             "diversity_score": float(diversity_score[index]),
             "ood_score": float(assessment["extrapolation_score"][index]),
-            "rationale": strategy,
+            "rationale": f"{strategy}; uncertainty is interval-width times training-domain novelty",
         }
         for index in selected
     ]

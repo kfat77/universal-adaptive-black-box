@@ -15,6 +15,15 @@ class ActiveLearningAndParetoTest(unittest.TestCase):
         self.assertEqual(len(recommendations), 3)
         self.assertTrue(all(-2.0 <= item["x"][0] <= 2.0 for item in recommendations))
 
+    def test_uncertainty_strategy_uses_training_domain_novelty(self) -> None:
+        X = np.linspace(-0.2, 0.2, 30).reshape(-1, 1)
+        engine = AdaptiveBlackBox(epochs=2).fit(X, X**2, validation_folds=2)
+        recommendations = recommend_next_experiments(
+            engine, [(-2.0, 2.0)], 30, 5, strategy="uncertainty"
+        )
+        scores = [item["uncertainty_score"] for item in recommendations]
+        self.assertGreater(max(scores), min(scores))
+
     def test_pareto_filter_respects_objective_directions(self) -> None:
         values = np.array([[1.0, 5.0], [2.0, 3.0], [3.0, 2.0], [4.0, 6.0]])
         mask = non_dominated_mask(values, ["minimize", "maximize"])

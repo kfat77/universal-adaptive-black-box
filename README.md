@@ -2,9 +2,13 @@
 
 > Cross-validated numerical surrogate models for forward prediction, uncertainty assessment, and constrained inverse design.
 
+[![CI](https://github.com/kfat77/universal-adaptive-black-box/actions/workflows/test.yml/badge.svg)](https://github.com/kfat77/universal-adaptive-black-box/actions/workflows/test.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 ## Project Overview
 
-Numerical Surrogate Toolkit learns regression-based surrogate models from numerical tabular data when an explicit input-output equation is unavailable or impractical. It compares several candidate regressors with cross-validation, refits the selected surrogate on all observations, and supports prediction and bounded inverse design.
+Numerical Surrogate Toolkit learns regression-based surrogate models from numerical tabular data when an explicit input-output equation is unavailable or impractical. It compares several candidate regressors with cross-validation, refits the selected surrogate on all observations (or development observations when split conformal calibration is requested), and supports prediction and bounded inverse design.
 
 The project is intentionally limited to supervised regression on numerical tabular data. It is not a universal black-box system or a general machine-learning framework.
 
@@ -118,7 +122,7 @@ prediction, lower, upper = engine.predict_interval([[1.0]], confidence=0.90)
 assessment = engine.assess_distribution([[1.0]])
 ```
 
-Prediction intervals use cross-validation residuals. They rely on calibration and future data being exchangeable; they are not physical, causal, or distribution-shift guarantees.
+The default `cv_residual` interval uses cross-validation residuals as a lightweight heuristic. For an independent calibration set, train with `uncertainty_method="split_conformal"`; this keeps calibration rows out of final model fitting. Both methods rely on exchangeability, can be unstable on small samples, and are not physical, causal, or distribution-shift guarantees.
 
 ## Inverse Design
 
@@ -132,6 +136,7 @@ solutions = solver.inverse_solve(
     x_bounds=[(-3.0, 3.0)],
     target_tolerance=0.02,
     constraints=[lambda x: x[0] >= -2.5],
+    linear_constraints=[{"coefficients": [1.0], "lower": -2.5, "upper": 2.5}],
     reference_x=[0.0],
     distance_penalty=0.1,
 )
@@ -155,8 +160,11 @@ Experiment recommendations do not execute experiments. Pareto filtering operates
 The executable examples use only synthetic data and are available in [`examples/`](examples):
 
 - `basic_workflow.py` — train, compare, and predict.
+- `linear_baseline.py` — compare Dummy, linear, and Ridge baselines.
+- `multi_output.py` — train a named multi-output model with output weights.
 - `constrained_inverse_design.py` — save an artifact and search with a constraint and preference penalty.
 - `uncertainty_ood_active_learning.py` — inspect intervals, OOD indicators, and candidate experiment suggestions.
+- `pareto_design.py` — filter a predicted multi-objective candidate pool to a Pareto front.
 
 Run the original end-to-end sine demonstration with `python main.py`.
 
@@ -166,10 +174,12 @@ Run the original end-to-end sine demonstration with `python main.py`.
 | --- | --- |
 | `AdaptiveBlackBox` | `fit`, `predict`, `predict_interval`, `assess_distribution`, `save`, `load` |
 | `ForwardSolver` | Load an artifact and call `predict` |
-| `InverseSolver` | Load an artifact and call `inverse_solve` with bounds and optional constraints |
+| `InverseSolver` | Load an artifact and call `inverse_solve` with bounds plus callable or affine constraints |
 | `load_tabular_data` | Validate selected numerical CSV/XLS/XLSX columns into `TabularDataset` |
 | `recommend_next_experiments` | Propose candidate locations; it never runs a physical experiment |
 | `non_dominated_mask` | Identify Pareto non-dominated rows in supplied objective values |
+
+Additional engine methods are `compare_data_distribution` (reports drift without adapting the model), `refit` (explicit offline retraining), and `recommend_next_experiments` (an engine-level wrapper around the experimental recommendation utility).
 
 ## Model Evaluation
 
@@ -190,6 +200,7 @@ python -m ruff check src tests
 python -m ruff format --check src tests
 python -m mypy src/adaptive_surrogate
 python -m pytest
+python -m pytest --cov=adaptive_surrogate --cov-fail-under=85
 python -m build
 ```
 

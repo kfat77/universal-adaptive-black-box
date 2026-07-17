@@ -1,16 +1,116 @@
 """Numerical inverse solving for forward models that do not have analytic inverses."""
 
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 import numpy as np
 from scipy.optimize import differential_evolution, minimize
 
 from .core_engine import AdaptiveBlackBox
+from .pareto import non_dominated_mask
 
 
 class InverseSolver:
     def __init__(self, artifact_path: str):
         self.model = AdaptiveBlackBox.load(artifact_path)
+
+    def pareto_solve(
+        self,
+        objectives: list[dict[str, Any]],
+        x_bounds: list[tuple[float, float]],
+        n_candidates: int = 512,
+        max_solutions: int = 50,
+        constraints: list[Callable[[np.ndarray], bool | float]] | None = None,
+        confidence: float = 0.9,
+        random_state: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return a sampled Pareto front for named/indexed surrogate outputs.
+
+        This is a bounded candidate-pool method, not a claim of globally optimal
+        multi-objective optimization. Constraints are hard filters; each result
+        includes predicted outputs, intervals, feasibility, and OOD diagnostics.
+        """
+        if self.model.input_dim is None or self.model.output_dim is None:
+            raise RuntimeError("Load a trained model before Pareto solving.")
+        bounds = np.asarray(x_bounds, dtype=float)
+        if (
+            bounds.shape != (self.model.input_dim, 2)
+            or not np.isfinite(bounds).all()
+            or np.any(bounds[:, 0] >= bounds[:, 1])
+        ):
+            raise ValueError("x_bounds must contain finite lower/upper bounds for each input.")
+        if not objectives or n_candidates < 2 or max_solutions < 1:
+            raise ValueError(
+                "objectives, at least two candidates, and a positive max_solutions are required."
+            )
+        indices, directions, weights = [], [], []
+        for objective in objectives:
+            output = objective.get("output")
+            if isinstance(output, str):
+                if self.model.target_names is None or output not in self.model.target_names:
+                    raise ValueError(f"Unknown objective output: {output}")
+                index = self.model.target_names.index(output)
+            elif isinstance(output, int) and 0 <= output < self.model.output_dim:
+                index = output
+            else:
+                raise ValueError("Each objective needs a valid output index or saved target name.")
+            direction = objective.get("direction")
+            weight = float(objective.get("weight", 1.0))
+            if direction not in {"minimize", "maximize"} or not np.isfinite(weight) or weight <= 0:
+                raise ValueError(
+                    "Objectives need minimize/maximize directions and positive finite weights."
+                )
+            indices.append(index)
+            directions.append(direction)
+            weights.append(weight)
+        if len(set(indices)) != len(indices):
+            raise ValueError("Each Pareto objective must refer to a different output.")
+        rng = np.random.default_rng(
+            self.model.random_state if random_state is None else random_state
+        )
+        candidates = rng.uniform(
+            bounds[:, 0], bounds[:, 1], size=(n_candidates, self.model.input_dim)
+        )
+
+        def is_feasible(candidate: np.ndarray) -> bool:
+            for constraint in constraints or []:
+                result = constraint(candidate)
+                if isinstance(result, (bool, np.bool_)):
+                    if not result:
+                        return False
+                elif not np.isfinite(float(result)) or float(result) < 0:
+                    return False
+            return True
+
+        feasible = np.array([is_feasible(candidate) for candidate in candidates])
+        candidates = candidates[feasible]
+        if not len(candidates):
+            return []
+        prediction, lower, upper = self.model.predict_interval(candidates, confidence=confidence)
+        assessment = self.model.assess_distribution(candidates)
+        objective_values = prediction[:, indices]
+        front = non_dominated_mask(objective_values, directions)
+        factors = np.array([1.0 if direction == "minimize" else -1.0 for direction in directions])
+        normalized = (objective_values - objective_values.min(axis=0)) / np.maximum(
+            np.ptp(objective_values, axis=0), np.finfo(float).eps
+        )
+        scalarized = normalized @ (np.asarray(weights) * factors)
+        selected = np.flatnonzero(front)[np.argsort(scalarized[front])][:max_solutions]
+        return [
+            {
+                "x": candidates[index],
+                "predicted_y": prediction[index],
+                "lower": lower[index],
+                "upper": upper[index],
+                "objective_values": objective_values[index],
+                "pareto_rank": 0,
+                "non_dominated": True,
+                "scalarized_score": float(scalarized[index]),
+                "feasible": True,
+                "in_distribution": bool(assessment["in_distribution"][index]),
+                "extrapolation_score": float(assessment["extrapolation_score"][index]),
+            }
+            for index in selected
+        ]
 
     def inverse_solve(
         self,
@@ -23,10 +123,12 @@ class InverseSolver:
         distance_metric: str = "normalized_euclidean",
         input_weights: np.ndarray | None = None,
         constraints: list[Callable[[np.ndarray], bool | float]] | None = None,
+        linear_constraints: list[dict[str, Any]] | None = None,
         fixed_variables: dict[int, float] | None = None,
         reference_x: np.ndarray | None = None,
         distance_penalty: float = 0.0,
         ood_penalty: float = 0.0,
+        target_spec: dict[int | str, dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         """Find inputs whose forward prediction is close to ``Y_target``.
 
@@ -36,7 +138,8 @@ class InverseSolver:
         output error. Multiple restarts can expose alternative valid inputs.
         ``min_separation`` defaults to Euclidean distance after every input is
         normalized by its supplied bounds. ``target_tolerance`` defines whether
-        each output is close enough to the requested target.
+        each output is close enough to the requested target. ``linear_constraints``
+        accepts dictionaries representing ``lower <= coefficients @ x <= upper``.
         """
         target = np.asarray(Y_target, dtype=float).reshape(1, -1)
         if not np.isfinite(target).all() or target.shape[1] != self.model.output_dim:
@@ -100,6 +203,11 @@ class InverseSolver:
             reference.shape != (self.model.input_dim,) or not np.isfinite(reference).all()
         ):
             raise ValueError("reference_x must contain one finite value per input.")
+        resolved_target_spec = self._resolve_target_spec(target_spec)
+        resolved_linear_constraints = self._resolve_linear_constraints(linear_constraints)
+        for output_index, spec in resolved_target_spec.items():
+            if "target" in spec:
+                target[0, output_index] = float(cast(float, spec["target"]))
         effective_bounds: list[tuple[float, float]] = []
         for index, bound in enumerate(bounds):
             if index in fixed:
@@ -125,14 +233,34 @@ class InverseSolver:
                     if not np.isfinite(value):
                         return float("inf")
                     violation += max(0.0, -value)
+            for coefficients, lower, upper in resolved_linear_constraints:
+                value = float(coefficients @ x)
+                violation += max(lower - value, 0.0) + max(value - upper, 0.0)
             return violation
+
+        def target_error_for(prediction: np.ndarray) -> np.ndarray:
+            error = np.abs(prediction - target[0])
+            for output_index, spec in resolved_target_spec.items():
+                if "between" in spec:
+                    lower, upper = cast(tuple[float, float], spec["between"])
+                    error[output_index] = max(lower - prediction[output_index], 0.0) + max(
+                        prediction[output_index] - upper, 0.0
+                    )
+                elif "min" in spec:
+                    error[output_index] = max(
+                        float(cast(float, spec["min"])) - prediction[output_index], 0.0
+                    )
+                elif "max" in spec:
+                    error[output_index] = max(
+                        prediction[output_index] - float(cast(float, spec["max"])), 0.0
+                    )
+            return error
 
         def objective(x: np.ndarray) -> float:
             candidate = apply_fixed(x)
-            residual = self.model.predict(candidate.reshape(1, -1)) - target
-            target_loss = float(
-                np.average(residual.reshape(-1) ** 2, weights=self.model.output_weights)
-            )
+            prediction = self.model.predict(candidate.reshape(1, -1))[0]
+            residual = target_error_for(prediction)
+            target_loss = float(np.average(residual**2, weights=self.model.output_weights))
             violation = constraint_violation(candidate)
             reference_loss = (
                 0.0 if reference is None else solution_distance(candidate, reference) ** 2
@@ -156,7 +284,7 @@ class InverseSolver:
             return float(np.linalg.norm(difference))
 
         answers: list[dict[str, Any]] = []
-        attempts = max_attempts if max_attempts is not None else n_solutions * 5
+        attempts = int(max_attempts if max_attempts is not None else n_solutions * 5)
         if attempts < n_solutions:
             raise ValueError("max_attempts must be at least n_solutions.")
         for attempt in range(attempts):
@@ -173,10 +301,8 @@ class InverseSolver:
                 continue
             prediction = self.model.predict(x_solution[None, :])[0]
             assessment = self.model.assess_distribution(x_solution[None, :])
-            target_error = np.abs(prediction - target[0])
-            target_loss = float(
-                np.average((prediction - target[0]) ** 2, weights=self.model.output_weights)
-            )
+            target_error = target_error_for(prediction)
+            target_loss = float(np.average(target_error**2, weights=self.model.output_weights))
             violation = constraint_violation(x_solution)
             reference_loss = (
                 0.0 if reference is None else solution_distance(x_solution, reference) ** 2
@@ -195,9 +321,16 @@ class InverseSolver:
                     "x": x_solution,
                     "predicted_y": prediction,
                     "target_error": target_error,
-                    "mse": float(np.mean((prediction - target[0]) ** 2)),
+                    "mse": float(np.mean(target_error**2)),
                     "weighted_loss": weighted_loss,
                     "constraint_violation": violation,
+                    "linear_constraint_violation": float(
+                        sum(
+                            max(lower - float(coefficients @ x_solution), 0.0)
+                            + max(float(coefficients @ x_solution) - upper, 0.0)
+                            for coefficients, lower, upper in resolved_linear_constraints
+                        )
+                    ),
                     "reference_distance": reference_loss**0.5,
                     "ood_penalty_component": ood_penalty * ood_loss,
                     "optimizer_success": optimizer_success,
@@ -220,3 +353,94 @@ class InverseSolver:
             if len(answers) == n_solutions:
                 break
         return sorted(answers, key=lambda answer: float(answer["weighted_loss"]))
+
+    def _resolve_linear_constraints(
+        self, linear_constraints: list[dict[str, Any]] | None
+    ) -> list[tuple[np.ndarray, float, float]]:
+        """Validate affine bounds of the form ``lower <= coefficients @ x <= upper``.
+
+        Callable constraints remain useful for arbitrary domain logic.  This
+        compact representation covers common budget, mass-balance, and blend
+        constraints without requiring users to write a callback.
+        """
+        if linear_constraints is None:
+            return []
+        if self.model.input_dim is None:
+            raise RuntimeError("Load a trained model before resolving linear constraints.")
+        resolved: list[tuple[np.ndarray, float, float]] = []
+        for constraint in linear_constraints:
+            if not isinstance(constraint, dict) or set(constraint) - {
+                "coefficients",
+                "lower",
+                "upper",
+            }:
+                raise ValueError(
+                    "Each linear constraint must be a dictionary with coefficients, lower, and/or upper."
+                )
+            if "coefficients" not in constraint or (
+                "lower" not in constraint and "upper" not in constraint
+            ):
+                raise ValueError(
+                    "Each linear constraint needs coefficients and at least one bound."
+                )
+            coefficients = np.asarray(constraint["coefficients"], dtype=float)
+            lower = float(constraint.get("lower", -np.inf))
+            upper = float(constraint.get("upper", np.inf))
+            if (
+                coefficients.shape != (self.model.input_dim,)
+                or not np.isfinite(coefficients).all()
+                or np.isnan(lower)
+                or np.isnan(upper)
+                or lower > upper
+            ):
+                raise ValueError(
+                    "Linear constraints need finite coefficients and lower <= upper bounds."
+                )
+            resolved.append((coefficients, lower, upper))
+        return resolved
+
+    def _resolve_target_spec(
+        self, target_spec: dict[int | str, dict[str, Any]] | None
+    ) -> dict[int, dict[str, float | tuple[float, float]]]:
+        """Validate structured exact, minimum, maximum, or interval output targets."""
+        if target_spec is None:
+            return {}
+        if self.model.output_dim is None:
+            raise RuntimeError("Load a trained model before resolving inverse targets.")
+        output_dim = self.model.output_dim
+        resolved: dict[int, dict[str, float | tuple[float, float]]] = {}
+        for output, raw_spec in target_spec.items():
+            if isinstance(output, str):
+                if self.model.target_names is None or output not in self.model.target_names:
+                    raise ValueError(f"Unknown target name in target_spec: {output}")
+                index = self.model.target_names.index(output)
+            elif isinstance(output, int) and 0 <= output < output_dim:
+                index = output
+            else:
+                raise ValueError(
+                    "target_spec keys must be valid output indices or saved target names."
+                )
+            if index in resolved or not isinstance(raw_spec, dict):
+                raise ValueError("target_spec entries must be unique dictionaries.")
+            allowed = {"target", "min", "max", "between"}
+            keys = set(raw_spec)
+            if not keys or keys - allowed or len(keys) != 1:
+                raise ValueError(
+                    "Each target_spec entry must contain exactly one of target, min, max, between."
+                )
+            key = next(iter(keys))
+            value = raw_spec[key]
+            if key == "between":
+                interval = np.asarray(value, dtype=float)
+                if (
+                    interval.shape != (2,)
+                    or not np.isfinite(interval).all()
+                    or interval[0] > interval[1]
+                ):
+                    raise ValueError("between targets must contain finite [lower, upper] values.")
+                resolved[index] = {key: (float(interval[0]), float(interval[1]))}
+            elif not np.isfinite(float(value)):
+                raise ValueError(f"{key} targets must be finite.")
+            else:
+                resolved[index] = {key: float(value)}
+        return resolved

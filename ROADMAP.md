@@ -14,6 +14,6 @@
 
 ## Planned
 
-- Richer target specifications and discrete optimization
-- Additional uncertainty methods and benchmark suites
-- Expanded examples and release automation
+- Discrete optimization and categorical experimental interfaces
+- Cross-conformal methods and broader benchmark suites
+- Bayesian optimization and expanded release automation
