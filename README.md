@@ -38,12 +38,15 @@ from pathlib import Path
 import numpy as np
 
 from src.core_engine import AdaptiveBlackBox
+from src.data_loader import load_tabular_data
 from src.forward_solver import ForwardSolver
 from src.inverse_solver import InverseSolver
 
 # Example: 1,000 observations, 3 numerical inputs, and 2 outputs.
-X = np.load("inputs.npy")       # shape: (1000, 3)
-Y = np.load("outputs.npy")      # shape: (1000, 2)
+# CSV or Excel: select targets by column name. All other columns become features.
+dataset = load_tabular_data("experiment.xlsx", target_columns=["yield", "purity"])
+X, Y = dataset.X, dataset.Y
+print(dataset.feature_names, dataset.target_names)
 artifact_path = Path("artifacts/my_model.joblib")
 
 # Train and persist the validation-selected model.
@@ -68,7 +71,7 @@ for solution in solutions:
     print(solution)
 ```
 
-For CSV input, load the desired feature and target columns into NumPy arrays first, for example with `numpy.loadtxt` or a dataframe library.
+`load_tabular_data` supports `.csv`, `.xls`, and `.xlsx`. Use `feature_columns=[...]` to select and order input columns explicitly, or omit it to use every non-target column. Selected columns must be numerical and finite.
 
 ## How inverse solving works
 
@@ -88,7 +91,7 @@ Each returned solution contains `x`, `predicted_y`, residual `mse`, a `success` 
 
 | Component | Method | Purpose |
 | --- | --- | --- |
-| `AdaptiveBlackBox` | `fit(X, Y, validation_folds=3)` | Cross-validate both candidates and select by mean validation MSE. |
+| `AdaptiveBlackBox` | `fit(X, Y, validation_folds=3)` | Cross-validate all candidates and select by mean validation MSE. |
 | `AdaptiveBlackBox` | `predict(X_new)` | Predict output rows from input rows. |
 | `AdaptiveBlackBox` | `save(path)` / `load(path)` | Persist and restore the selected model and scalers. |
 | `ForwardSolver` | `predict(X_new)` | Load an artifact and perform forward prediction. |
@@ -103,9 +106,11 @@ Each returned solution contains `x`, `predicted_y`, residual `mse`, a `success` 
 ├── .github/workflows/test.yml
 ├── src/
 │   ├── core_engine.py      # Training, validation, selection, persistence
+│   ├── data_loader.py      # CSV and Excel loading with numerical validation
 │   ├── forward_solver.py   # Forward prediction wrapper
 │   └── inverse_solver.py   # Bounded inverse optimization
 └── tests/
+    ├── test_data_loader.py
     ├── test_inverse_solver.py
     └── test_single_output.py
 ```
