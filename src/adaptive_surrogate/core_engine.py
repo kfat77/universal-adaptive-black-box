@@ -21,7 +21,7 @@ from sklearn.ensemble import (
     RandomForestRegressor,
 )
 from sklearn.linear_model import LinearRegression, Ridge
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import RandomizedSearchCV, train_test_split
 from sklearn.multioutput import MultiOutputRegressor
 from sklearn.preprocessing import StandardScaler
 from torch import nn
@@ -102,6 +102,8 @@ class AdaptiveBlackBox:
         self.selection_metric: str = "nrmse"
         self.validation_strategy: str = "kfold"
         self.outer_evaluation_metrics: dict[str, Any] | None = None
+        self.search_mode: str = "fast"
+        self.search_details: dict[str, Any] = {}
         self.feature_names: tuple[str, ...] | None = None
         self.target_names: tuple[str, ...] | None = None
         self.calibration_residuals: np.ndarray | None = None
@@ -206,7 +208,9 @@ class AdaptiveBlackBox:
             return base_model.fit(X, Y.ravel())
         return MultiOutputRegressor(base_model).fit(X, Y)
 
-    def _fit_candidate(self, model_name: str, X: np.ndarray, Y: np.ndarray, seed: int) -> Any:
+    def _fit_candidate(
+        self, model_name: str, X: np.ndarray, Y: np.ndarray, seed: int, search_mode: str = "fast"
+    ) -> Any:
         registry = {
             "dummy": lambda: self._fit_sklearn(DummyRegressor(strategy="mean"), X, Y),
             "linear_regression": lambda: self._fit_sklearn(LinearRegression(), X, Y),
@@ -219,9 +223,39 @@ class AdaptiveBlackBox:
             "hist_gradient_boosting": lambda: self._fit_gradient_boosting(X, Y),
         }
         try:
-            return registry[model_name]()
+            candidate = registry[model_name]()
         except KeyError as error:
             raise ValueError(f"Unknown candidate model: {model_name}") from error
+        if search_mode == "fast" or model_name not in self._search_spaces() or len(X) < 8:
+            return candidate
+        budget = {"balanced": 3, "thorough": 8}[search_mode]
+        search = RandomizedSearchCV(
+            candidate,
+            self._search_spaces()[model_name],
+            n_iter=budget,
+            scoring="neg_mean_squared_error",
+            cv=min(3, len(X) // 2),
+            random_state=seed,
+            n_jobs=1,
+        ).fit(X, Y.ravel() if self.output_dim == 1 else Y)
+        self.search_details[model_name] = {
+            "mode": search_mode,
+            "budget": budget,
+            "random_state": seed,
+            "best_params": search.best_params_,
+            "best_inner_score": float(search.best_score_),
+        }
+        return search.best_estimator_
+
+    @staticmethod
+    def _search_spaces() -> dict[str, dict[str, list[Any]]]:
+        """Small scikit-learn search spaces used only by non-fast budgets."""
+        return {
+            "ridge": {"alpha": [0.01, 0.1, 1.0, 10.0, 100.0]},
+            "random_forest": {"n_estimators": [100, 250], "max_depth": [None, 6, 12]},
+            "extra_trees": {"n_estimators": [100, 250], "max_depth": [None, 6, 12]},
+            "hist_gradient_boosting": {"max_iter": [100, 200, 300], "learning_rate": [0.03, 0.1]},
+        }
 
     @staticmethod
     def _model_category(model_name: str) -> str:
@@ -252,6 +286,7 @@ class AdaptiveBlackBox:
         target_names: list[str] | tuple[str, ...] | None = None,
         uncertainty_method: str = "cv_residual",
         calibration_fraction: float = 0.2,
+        search_mode: str = "fast",
     ) -> "AdaptiveBlackBox":
         """Cross-validate candidates, select one, then fit the final surrogate.
 
@@ -284,6 +319,8 @@ class AdaptiveBlackBox:
             raise ValueError("selection_metric must be one of mse, rmse, mae, r2, or nrmse.")
         if uncertainty_method not in {"cv_residual", "split_conformal"}:
             raise ValueError("uncertainty_method must be cv_residual or split_conformal.")
+        if search_mode not in {"fast", "balanced", "thorough"}:
+            raise ValueError("search_mode must be fast, balanced, or thorough.")
         if not 0.05 <= calibration_fraction < 0.5:
             raise ValueError("calibration_fraction must be between 0.05 and 0.5.")
         self.output_weights = validate_output_weights(output_weights, self.output_dim)
@@ -300,6 +337,8 @@ class AdaptiveBlackBox:
             "target_names",
         )
         self.uncertainty_method = uncertainty_method
+        self.search_mode = search_mode
+        self.search_details = {}
         calibration_index: np.ndarray | None = None
         model_index = np.arange(len(X))
         if uncertainty_method == "split_conformal":
@@ -335,7 +374,9 @@ class AdaptiveBlackBox:
             for name in CANDIDATE_MODELS:
                 started = perf_counter()
                 candidates[name] = (
-                    self._fit_candidate(name, X_train, Y_train, self.random_state + fold),
+                    self._fit_candidate(
+                        name, X_train, Y_train, self.random_state + fold, search_mode
+                    ),
                     perf_counter() - started,
                 )
             for name, (candidate, training_seconds) in candidates.items():
@@ -389,7 +430,9 @@ class AdaptiveBlackBox:
         self.metrics[self.model_name]["selected"] = True
         X_full = self.x_scaler.fit_transform(X_model)
         Y_full = self.y_scaler.fit_transform(Y_model)
-        self.model = self._fit_candidate(self.model_name, X_full, Y_full, self.random_state)
+        self.model = self._fit_candidate(
+            self.model_name, X_full, Y_full, self.random_state, search_mode
+        )
         self.training_samples = len(X_model)
         self.calibration_samples = 0 if calibration_index is None else len(calibration_index)
         if calibration_index is None:
@@ -664,6 +707,8 @@ class AdaptiveBlackBox:
                 "calibration_samples": self.calibration_samples,
                 "validation_strategy": self.validation_strategy,
                 "outer_evaluation_metrics": self.outer_evaluation_metrics,
+                "search_mode": self.search_mode,
+                "search_details": self.search_details,
                 "output_weights": None
                 if self.output_weights is None
                 else self.output_weights.tolist(),
