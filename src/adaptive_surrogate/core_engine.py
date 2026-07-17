@@ -21,6 +21,7 @@ from sklearn.ensemble import (
     RandomForestRegressor,
 )
 from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.model_selection import train_test_split
 from sklearn.multioutput import MultiOutputRegressor
 from sklearn.preprocessing import StandardScaler
 from torch import nn
@@ -103,6 +104,8 @@ class AdaptiveBlackBox:
         self.feature_names: tuple[str, ...] | None = None
         self.target_names: tuple[str, ...] | None = None
         self.calibration_residuals: np.ndarray | None = None
+        self.uncertainty_method: str = "cv_residual"
+        self.calibration_samples: int = 0
         self.training_x_scaled: np.ndarray | None = None
         self.training_feature_min: np.ndarray | None = None
         self.training_feature_max: np.ndarray | None = None
@@ -246,11 +249,15 @@ class AdaptiveBlackBox:
         holdout_fraction: float = 0.2,
         feature_names: list[str] | tuple[str, ...] | None = None,
         target_names: list[str] | tuple[str, ...] | None = None,
+        uncertainty_method: str = "cv_residual",
+        calibration_fraction: float = 0.2,
     ) -> "AdaptiveBlackBox":
-        """Cross-validate candidates, select one, then refit it on all observations.
+        """Cross-validate candidates, select one, then fit the final surrogate.
 
         Optional feature and target names are persisted with the artifact so callers
-        can retain the tabular-data schema used during training.
+        can retain the tabular-data schema used during training. ``split_conformal``
+        reserves an independent calibration set and therefore fits the final model on
+        the remaining development observations rather than all rows.
         """
         inferred_feature_names = self._column_names_from_dataframe(X)
         inferred_target_names = self._column_names_from_dataframe(Y)
@@ -261,6 +268,10 @@ class AdaptiveBlackBox:
         self.input_dim, self.output_dim = X.shape[1], Y.shape[1]
         if selection_metric not in {"mse", "rmse", "mae", "r2", "nrmse"}:
             raise ValueError("selection_metric must be one of mse, rmse, mae, r2, or nrmse.")
+        if uncertainty_method not in {"cv_residual", "split_conformal"}:
+            raise ValueError("uncertainty_method must be cv_residual or split_conformal.")
+        if not 0.05 <= calibration_fraction < 0.5:
+            raise ValueError("calibration_fraction must be between 0.05 and 0.5.")
         self.output_weights = validate_output_weights(output_weights, self.output_dim)
         self.selection_metric = selection_metric
         self.validation_strategy = validation_strategy
@@ -274,24 +285,37 @@ class AdaptiveBlackBox:
             self.output_dim,
             "target_names",
         )
+        self.uncertainty_method = uncertainty_method
+        calibration_index: np.ndarray | None = None
+        model_index = np.arange(len(X))
+        if uncertainty_method == "split_conformal":
+            if len(X) < 10:
+                raise ValueError("split_conformal requires at least 10 observations.")
+            model_index, calibration_index = train_test_split(
+                model_index,
+                test_size=calibration_fraction,
+                random_state=self.random_state,
+            )
+        X_model, Y_model = X[model_index], Y[model_index]
+        model_groups = None if groups is None else np.asarray(groups)[model_index]
         scores: dict[str, list[dict[str, Any]]] = {name: [] for name in CANDIDATE_MODELS}
         residuals: dict[str, list[np.ndarray]] = {name: [] for name in CANDIDATE_MODELS}
-        target_scales = np.ptp(Y, axis=0)
+        target_scales = np.ptp(Y_model, axis=0)
         splits = build_splits(
             validation_strategy,
-            len(X),
+            len(X_model),
             validation_folds,
             self.random_state,
-            groups,
+            model_groups,
             holdout_fraction,
         )
         for fold, (train_index, validation_index) in enumerate(splits):
             x_scaler, y_scaler = StandardScaler(), StandardScaler()
-            X_train = x_scaler.fit_transform(X[train_index])
-            Y_train = y_scaler.fit_transform(Y[train_index])
+            X_train = x_scaler.fit_transform(X_model[train_index])
+            Y_train = y_scaler.fit_transform(Y_model[train_index])
             X_validation, Y_validation = (
-                x_scaler.transform(X[validation_index]),
-                Y[validation_index],
+                x_scaler.transform(X_model[validation_index]),
+                Y_model[validation_index],
             )
             candidates = {}
             for name in CANDIDATE_MODELS:
@@ -349,17 +373,24 @@ class AdaptiveBlackBox:
             else min(self.metrics, key=lambda name: self.metrics[name][selection_metric])
         )
         self.metrics[self.model_name]["selected"] = True
-        X_full = self.x_scaler.fit_transform(X)
-        Y_full = self.y_scaler.fit_transform(Y)
+        X_full = self.x_scaler.fit_transform(X_model)
+        Y_full = self.y_scaler.fit_transform(Y_model)
         self.model = self._fit_candidate(self.model_name, X_full, Y_full, self.random_state)
-        self.training_samples = len(X)
-        self.calibration_residuals = np.vstack(residuals[self.model_name])
-        self.training_x_scaled = X_full
+        self.training_samples = len(X_model)
+        self.calibration_samples = 0 if calibration_index is None else len(calibration_index)
+        if calibration_index is None:
+            self.calibration_residuals = np.vstack(residuals[self.model_name])
+        else:
+            calibration_prediction = self.predict(X[calibration_index])
+            self.calibration_residuals = np.abs(calibration_prediction - Y[calibration_index])
+        self.training_x_scaled = self.x_scaler.transform(X)
         self.training_feature_min = X.min(axis=0)
         self.training_feature_max = X.max(axis=0)
         self.training_feature_mean = X.mean(axis=0)
         self.training_feature_std = X.std(axis=0)
-        distances = np.linalg.norm(X_full[:, None, :] - X_full[None, :, :], axis=2)
+        distances = np.linalg.norm(
+            self.training_x_scaled[:, None, :] - self.training_x_scaled[None, :, :], axis=2
+        )
         np.fill_diagonal(distances, np.inf)
         self.ood_distance_threshold = float(np.quantile(np.min(distances, axis=1), 0.95))
         return self
@@ -414,10 +445,11 @@ class AdaptiveBlackBox:
     def predict_interval(
         self, X_new: np.ndarray, confidence: float = 0.9
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Return prediction intervals calibrated from cross-validation residuals.
+        """Return prediction intervals calibrated from held-out or CV residuals.
 
-        The interval assumes calibration and future samples are exchangeable; it is
-        not a physical, causal, or distribution-shift guarantee.
+        ``split_conformal`` uses independent calibration residuals; ``cv_residual``
+        is a lighter cross-validation-residual heuristic. Both assume calibration and
+        future samples are exchangeable and are not physical or causal guarantees.
         """
         if not 0 < confidence < 1 or self.calibration_residuals is None:
             raise ValueError("confidence must be between 0 and 1 after fitting the model.")
@@ -529,6 +561,8 @@ class AdaptiveBlackBox:
                 "output_dim": self.output_dim,
                 "training_samples": self.training_samples,
                 "selection_metric": self.selection_metric,
+                "uncertainty_method": self.uncertainty_method,
+                "calibration_samples": self.calibration_samples,
                 "validation_strategy": self.validation_strategy,
                 "output_weights": None
                 if self.output_weights is None
