@@ -89,6 +89,8 @@ class AdaptiveBlackBox:
             "learning_rate": 1e-3,
             "weight_decay": 0.0,
             "dropout": 0.0,
+            "scheduler_patience": None,
+            "scheduler_factor": 0.5,
         } | (mlp_config or {})
         self.x_scaler = StandardScaler()
         self.y_scaler = StandardScaler()
@@ -141,6 +143,16 @@ class AdaptiveBlackBox:
             lr=float(config["learning_rate"]),
             weight_decay=float(config["weight_decay"]),
         )
+        scheduler = (
+            None
+            if config.get("scheduler_patience") is None
+            else torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode="min",
+                patience=int(config["scheduler_patience"]),
+                factor=float(config["scheduler_factor"]),
+            )
+        )
         x_tensor = torch.tensor(X, dtype=torch.float32)
         y_tensor = torch.tensor(Y, dtype=torch.float32)
         validation_size = max(1, int(len(X) * 0.1)) if len(X) >= 10 else 0
@@ -172,6 +184,8 @@ class AdaptiveBlackBox:
                 )
                 validation_loss = float(nn.functional.mse_loss(model(check_x), check_y))
             model.train()
+            if scheduler is not None:
+                scheduler.step(validation_loss)
             if validation_loss < best_loss:
                 best_loss, stale_epochs = validation_loss, 0
                 best_state = {

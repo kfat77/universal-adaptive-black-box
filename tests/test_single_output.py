@@ -50,6 +50,13 @@ class SingleOutputRegressionTest(unittest.TestCase):
         model.fit(X, X, validation_folds=2)
         self.assertEqual(model.mlp_config["batch_size"], 8)
 
+    def test_mlp_scheduler_configuration_is_supported(self) -> None:
+        X = np.linspace(-1.0, 1.0, 20).reshape(-1, 1)
+        model = AdaptiveBlackBox(
+            mlp_config={"max_epochs": 3, "patience": 1, "scheduler_patience": 1}
+        ).fit(X, X, validation_folds=2)
+        self.assertEqual(model.mlp_config["scheduler_patience"], 1)
+
     def test_dataframe_prediction_reorders_known_columns_and_rejects_schema_drift(self) -> None:
         X = pd.DataFrame({"temperature": np.linspace(-1.0, 1.0, 24), "pressure": 2.0})
         Y = pd.DataFrame({"yield": 2.0 * X["temperature"] + X["pressure"]})
