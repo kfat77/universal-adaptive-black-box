@@ -2,7 +2,20 @@
 
 All notable changes are documented in this file. This project follows the principles of [Keep a Changelog](https://keepachangelog.com/) and uses semantic versioning for published releases.
 
-## [0.2.0] - Unreleased
+## [0.3.0] - Unreleased
+
+### Added
+
+- Nested and group-safe nested validation, tiered search budgets, and optional MLP learning-rate scheduling.
+- Split-conformal calibration, finite-sample intervals, distribution-drift reporting, and model-agnostic explanations.
+- DataFrame-safe prediction, named output weights, structured inverse targets, and sampled Pareto inverse design.
+- Reproducible local benchmarks with measured CSV results, Windows CI, coverage enforcement, and additional examples.
+
+### Changed
+
+- Strengthened group isolation, finite-sample conformal calibration, Pareto ordering, and active-learning novelty scoring.
+
+## [0.2.0] - 2026-07-17
 
 ### Added
 

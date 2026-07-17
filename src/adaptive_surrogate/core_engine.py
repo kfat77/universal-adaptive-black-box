@@ -31,7 +31,7 @@ from .metrics import compute_regression_metrics, validate_output_weights
 from .validation import build_splits
 
 ARTIFACT_VERSION = 2
-PACKAGE_VERSION = "0.2.0"
+PACKAGE_VERSION = "0.3.0"
 CANDIDATE_MODELS = (
     "dummy",
     "linear_regression",
