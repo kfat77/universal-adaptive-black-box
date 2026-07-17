@@ -101,6 +101,7 @@ class AdaptiveBlackBox:
         self.output_weights: np.ndarray | None = None
         self.selection_metric: str = "nrmse"
         self.validation_strategy: str = "kfold"
+        self.outer_evaluation_metrics: dict[str, Any] | None = None
         self.feature_names: tuple[str, ...] | None = None
         self.target_names: tuple[str, ...] | None = None
         self.calibration_residuals: np.ndarray | None = None
@@ -259,6 +260,19 @@ class AdaptiveBlackBox:
         reserves an independent calibration set and therefore fits the final model on
         the remaining development observations rather than all rows.
         """
+        if validation_strategy == "nested":
+            return self._fit_nested(
+                X,
+                Y,
+                validation_folds=validation_folds,
+                output_weights=output_weights,
+                selection_metric=selection_metric,
+                groups=groups,
+                feature_names=feature_names,
+                target_names=target_names,
+                uncertainty_method=uncertainty_method,
+                calibration_fraction=calibration_fraction,
+            )
         inferred_feature_names = self._column_names_from_dataframe(X)
         inferred_target_names = self._column_names_from_dataframe(Y)
         X, Y = self._as_2d(X, "X"), self._as_2d(Y, "Y")
@@ -393,6 +407,91 @@ class AdaptiveBlackBox:
         )
         np.fill_diagonal(distances, np.inf)
         self.ood_distance_threshold = float(np.quantile(np.min(distances, axis=1), 0.95))
+        return self
+
+    def _fit_nested(
+        self,
+        X: np.ndarray,
+        Y: np.ndarray,
+        validation_folds: int,
+        output_weights: list[float] | np.ndarray | None,
+        selection_metric: str,
+        groups: np.ndarray | None,
+        feature_names: list[str] | tuple[str, ...] | None,
+        target_names: list[str] | tuple[str, ...] | None,
+        uncertainty_method: str,
+        calibration_fraction: float,
+    ) -> "AdaptiveBlackBox":
+        """Estimate unbiased outer-fold performance before final full-data selection.
+
+        Each outer fold creates an independent engine that performs its own inner
+        K-fold selection. The outer validation rows are never used by that inner
+        selection. ``metrics`` retains final full-data selection metrics, while
+        ``outer_evaluation_metrics`` reports the held-out estimate.
+        """
+        raw_x, raw_y = self._as_2d(X, "X"), self._as_2d(Y, "Y")
+        if len(raw_x) != len(raw_y):
+            raise ValueError("X and Y must have the same number of rows.")
+        outer_strategy = "group_kfold" if groups is not None else "kfold"
+        outer_splits = build_splits(
+            outer_strategy,
+            len(raw_x),
+            validation_folds,
+            self.random_state,
+            groups,
+        )
+        outer_fold_metrics: list[dict[str, Any]] = []
+        weights = validate_output_weights(output_weights, raw_y.shape[1])
+        scales = np.ptp(raw_y, axis=0)
+        for fold, (train_index, test_index) in enumerate(outer_splits):
+            inner = AdaptiveBlackBox(
+                random_state=self.random_state + fold,
+                hidden_dim=self.hidden_dim,
+                epochs=self.epochs,
+                mlp_config=self.mlp_config,
+            ).fit(
+                raw_x[train_index],
+                raw_y[train_index],
+                validation_folds=validation_folds,
+                output_weights=weights,
+                selection_metric=selection_metric,
+                validation_strategy="kfold",
+                uncertainty_method=uncertainty_method,
+                calibration_fraction=calibration_fraction,
+            )
+            evaluation: dict[str, Any] = compute_regression_metrics(
+                raw_y[test_index],
+                inner.predict(raw_x[test_index]),
+                weights,
+                normalization_scales=scales,
+            )
+            evaluation["selected_model"] = inner.model_name
+            outer_fold_metrics.append(evaluation)
+        self.fit(
+            X,
+            Y,
+            validation_folds=validation_folds,
+            output_weights=output_weights,
+            selection_metric=selection_metric,
+            validation_strategy="kfold",
+            groups=groups,
+            feature_names=feature_names,
+            target_names=target_names,
+            uncertainty_method=uncertainty_method,
+            calibration_fraction=calibration_fraction,
+        )
+        self.validation_strategy = "nested"
+        self.outer_evaluation_metrics = (
+            {
+                metric: float(np.mean([fold[metric] for fold in outer_fold_metrics]))
+                for metric in ("mse", "rmse", "mae", "r2", "nrmse")
+            }
+            | {
+                f"{metric}_std": float(np.std([fold[metric] for fold in outer_fold_metrics]))
+                for metric in ("mse", "rmse", "mae", "r2", "nrmse")
+            }
+            | {"fold_metrics": outer_fold_metrics}
+        )
         return self
 
     @staticmethod
@@ -564,6 +663,7 @@ class AdaptiveBlackBox:
                 "uncertainty_method": self.uncertainty_method,
                 "calibration_samples": self.calibration_samples,
                 "validation_strategy": self.validation_strategy,
+                "outer_evaluation_metrics": self.outer_evaluation_metrics,
                 "output_weights": None
                 if self.output_weights is None
                 else self.output_weights.tolist(),
