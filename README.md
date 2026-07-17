@@ -2,6 +2,10 @@
 
 > Cross-validated numerical surrogate models for forward prediction, uncertainty assessment, and constrained inverse design.
 
+[![CI](https://github.com/kfat77/universal-adaptive-black-box/actions/workflows/test.yml/badge.svg)](https://github.com/kfat77/universal-adaptive-black-box/actions/workflows/test.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 ## Project Overview
 
 Numerical Surrogate Toolkit learns regression-based surrogate models from numerical tabular data when an explicit input-output equation is unavailable or impractical. It compares several candidate regressors with cross-validation, refits the selected surrogate on all observations, and supports prediction and bounded inverse design.
@@ -118,7 +122,7 @@ prediction, lower, upper = engine.predict_interval([[1.0]], confidence=0.90)
 assessment = engine.assess_distribution([[1.0]])
 ```
 
-Prediction intervals use cross-validation residuals. They rely on calibration and future data being exchangeable; they are not physical, causal, or distribution-shift guarantees.
+The default `cv_residual` interval uses cross-validation residuals as a lightweight heuristic. For an independent calibration set, train with `uncertainty_method="split_conformal"`; this keeps calibration rows out of final model fitting. Both methods rely on exchangeability, can be unstable on small samples, and are not physical, causal, or distribution-shift guarantees.
 
 ## Inverse Design
 
@@ -170,6 +174,8 @@ Run the original end-to-end sine demonstration with `python main.py`.
 | `load_tabular_data` | Validate selected numerical CSV/XLS/XLSX columns into `TabularDataset` |
 | `recommend_next_experiments` | Propose candidate locations; it never runs a physical experiment |
 | `non_dominated_mask` | Identify Pareto non-dominated rows in supplied objective values |
+
+Additional engine methods are `compare_data_distribution` (reports drift without adapting the model), `refit` (explicit offline retraining), and `recommend_next_experiments` (an engine-level wrapper around the experimental recommendation utility).
 
 ## Model Evaluation
 
