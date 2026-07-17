@@ -8,8 +8,9 @@ The project is intended for problems where you have measured numerical samples b
 
 - Accepts multi-dimensional numerical inputs `X` with shape `(N, D_in)` and targets `Y` with shape `(N, D_out)`.
 - Uses reproducible shuffled K-fold cross-validation to compare candidates.
-- Trains two candidates: a PyTorch MLP and a scikit-learn random forest.
+- Trains four complementary candidates: a PyTorch MLP, random forest, Extra Trees, and histogram gradient boosting.
 - Selects the model with the lowest mean validation MSE, reports MSE/R² variation across folds, then refits the winner on all supplied data.
+- Records the number of samples used for the final refit as `training_samples`.
 - Performs forward prediction: `X -> Y`.
 - Performs bounded inverse solving: find distinct `X` values whose prediction is close to a target `Y`, with optimization diagnostics.
 - Supports single- and multi-output targets.
@@ -111,7 +112,7 @@ Each returned solution contains `x`, `predicted_y`, residual `mse`, a `success` 
 
 ## Important limitations
 
-- The selected model is chosen only from the MLP and random-forest candidates currently included.
+- The selected model is chosen only from the four included numerical regression candidates; optional symbolic regression and external gradient-boosting libraries are intentionally out of scope for this lightweight release.
 - Cross-validation estimates quality only when its held-out folds resemble future data; it does not replace an independent test set for high-stakes work.
 - An inverse solution is an input that fits the learned model, not proof that it is physically unique or feasible.
 - Saved artifacts use Python pickle. Load only artifacts that you created or trust.

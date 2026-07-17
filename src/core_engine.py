@@ -8,13 +8,15 @@ import pickle
 
 import numpy as np
 import torch
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import ExtraTreesRegressor, HistGradientBoostingRegressor, RandomForestRegressor
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import KFold
+from sklearn.multioutput import MultiOutputRegressor
 from sklearn.preprocessing import StandardScaler
 from torch import nn
 
 ARTIFACT_VERSION = 1
+CANDIDATE_MODELS = ("mlp", "random_forest", "extra_trees", "hist_gradient_boosting")
 
 
 class MLP(nn.Module):
@@ -46,6 +48,7 @@ class AdaptiveBlackBox:
         self.metrics: dict[str, dict[str, float]] = {}
         self.input_dim: int | None = None
         self.output_dim: int | None = None
+        self.training_samples: int | None = None
 
     @staticmethod
     def _as_2d(values: np.ndarray, name: str) -> np.ndarray:
@@ -78,6 +81,30 @@ class AdaptiveBlackBox:
         model.fit(X, Y.ravel() if self.output_dim == 1 else Y)
         return model
 
+    def _fit_extra_trees(self, X: np.ndarray, Y: np.ndarray) -> ExtraTreesRegressor:
+        """Fit a more randomized tree ensemble that can capture fine interactions."""
+        model = ExtraTreesRegressor(n_estimators=250, random_state=self.random_state, n_jobs=-1)
+        model.fit(X, Y.ravel() if self.output_dim == 1 else Y)
+        return model
+
+    def _fit_gradient_boosting(self, X: np.ndarray, Y: np.ndarray) -> Any:
+        """Fit a boosted-tree candidate, wrapping it for multi-output targets."""
+        base_model = HistGradientBoostingRegressor(max_iter=200, random_state=self.random_state)
+        if self.output_dim == 1:
+            return base_model.fit(X, Y.ravel())
+        return MultiOutputRegressor(base_model).fit(X, Y)
+
+    def _fit_candidate(self, model_name: str, X: np.ndarray, Y: np.ndarray, seed: int) -> Any:
+        if model_name == "mlp":
+            return self._fit_mlp(X, Y, seed)
+        if model_name == "random_forest":
+            return self._fit_forest(X, Y)
+        if model_name == "extra_trees":
+            return self._fit_extra_trees(X, Y)
+        if model_name == "hist_gradient_boosting":
+            return self._fit_gradient_boosting(X, Y)
+        raise ValueError(f"Unknown candidate model: {model_name}")
+
     def _predict_scaled(self, model: Any, model_name: str, X: np.ndarray) -> np.ndarray:
         if model_name == "mlp":
             with torch.no_grad():
@@ -95,7 +122,7 @@ class AdaptiveBlackBox:
             raise ValueError("validation_folds must leave at least two samples in every validation fold.")
 
         self.input_dim, self.output_dim = X.shape[1], Y.shape[1]
-        scores = {"mlp": {"mse": [], "r2": []}, "random_forest": {"mse": [], "r2": []}}
+        scores = {name: {"mse": [], "r2": []} for name in CANDIDATE_MODELS}
         splitter = KFold(n_splits=validation_folds, shuffle=True, random_state=self.random_state)
         for fold, (train_index, validation_index) in enumerate(splitter.split(X)):
             x_scaler, y_scaler = StandardScaler(), StandardScaler()
@@ -103,8 +130,8 @@ class AdaptiveBlackBox:
             Y_train = y_scaler.fit_transform(Y[train_index])
             X_validation, Y_validation = x_scaler.transform(X[validation_index]), Y[validation_index]
             candidates = {
-                "mlp": self._fit_mlp(X_train, Y_train, self.random_state + fold),
-                "random_forest": self._fit_forest(X_train, Y_train),
+                name: self._fit_candidate(name, X_train, Y_train, self.random_state + fold)
+                for name in CANDIDATE_MODELS
             }
             for name, candidate in candidates.items():
                 prediction = y_scaler.inverse_transform(self._predict_scaled(candidate, name, X_validation))
@@ -118,8 +145,8 @@ class AdaptiveBlackBox:
         self.model_name = min(self.metrics, key=lambda name: self.metrics[name]["mse"])
         X_full = self.x_scaler.fit_transform(X)
         Y_full = self.y_scaler.fit_transform(Y)
-        self.model = (self._fit_mlp(X_full, Y_full, self.random_state)
-                      if self.model_name == "mlp" else self._fit_forest(X_full, Y_full))
+        self.model = self._fit_candidate(self.model_name, X_full, Y_full, self.random_state)
+        self.training_samples = len(X)
         return self
 
     def predict(self, X_new: np.ndarray) -> np.ndarray:

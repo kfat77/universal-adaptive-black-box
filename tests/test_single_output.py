@@ -19,8 +19,16 @@ class SingleOutputRegressionTest(unittest.TestCase):
         X = np.linspace(-1.0, 1.0, 30).reshape(-1, 1)
         Y = (X**2).reshape(-1, 1)
         model = AdaptiveBlackBox(epochs=2).fit(X, Y, validation_folds=3)
+        self.assertEqual(set(model.metrics), {"mlp", "random_forest", "extra_trees", "hist_gradient_boosting"})
+        self.assertEqual(model.training_samples, len(X))
         self.assertIn("mse_std", model.metrics[model.model_name])
         self.assertIn("r2_std", model.metrics[model.model_name])
+
+    def test_multi_output_training_and_prediction(self) -> None:
+        X = np.linspace(-1.0, 1.0, 30).reshape(-1, 1)
+        Y = np.column_stack((X.ravel() ** 2, 2.0 * X.ravel() + 1.0))
+        model = AdaptiveBlackBox(epochs=2).fit(X, Y, validation_folds=3)
+        self.assertEqual(model.predict(np.array([[0.25]])).shape, (1, 2))
 
 
 if __name__ == "__main__":
