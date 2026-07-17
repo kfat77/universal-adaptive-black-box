@@ -136,6 +136,7 @@ solutions = solver.inverse_solve(
     x_bounds=[(-3.0, 3.0)],
     target_tolerance=0.02,
     constraints=[lambda x: x[0] >= -2.5],
+    linear_constraints=[{"coefficients": [1.0], "lower": -2.5, "upper": 2.5}],
     reference_x=[0.0],
     distance_penalty=0.1,
 )
@@ -173,7 +174,7 @@ Run the original end-to-end sine demonstration with `python main.py`.
 | --- | --- |
 | `AdaptiveBlackBox` | `fit`, `predict`, `predict_interval`, `assess_distribution`, `save`, `load` |
 | `ForwardSolver` | Load an artifact and call `predict` |
-| `InverseSolver` | Load an artifact and call `inverse_solve` with bounds and optional constraints |
+| `InverseSolver` | Load an artifact and call `inverse_solve` with bounds plus callable or affine constraints |
 | `load_tabular_data` | Validate selected numerical CSV/XLS/XLSX columns into `TabularDataset` |
 | `recommend_next_experiments` | Propose candidate locations; it never runs a physical experiment |
 | `non_dominated_mask` | Identify Pareto non-dominated rows in supplied objective values |

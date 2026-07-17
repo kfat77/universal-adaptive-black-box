@@ -123,6 +123,7 @@ class InverseSolver:
         distance_metric: str = "normalized_euclidean",
         input_weights: np.ndarray | None = None,
         constraints: list[Callable[[np.ndarray], bool | float]] | None = None,
+        linear_constraints: list[dict[str, Any]] | None = None,
         fixed_variables: dict[int, float] | None = None,
         reference_x: np.ndarray | None = None,
         distance_penalty: float = 0.0,
@@ -137,7 +138,8 @@ class InverseSolver:
         output error. Multiple restarts can expose alternative valid inputs.
         ``min_separation`` defaults to Euclidean distance after every input is
         normalized by its supplied bounds. ``target_tolerance`` defines whether
-        each output is close enough to the requested target.
+        each output is close enough to the requested target. ``linear_constraints``
+        accepts dictionaries representing ``lower <= coefficients @ x <= upper``.
         """
         target = np.asarray(Y_target, dtype=float).reshape(1, -1)
         if not np.isfinite(target).all() or target.shape[1] != self.model.output_dim:
@@ -202,6 +204,7 @@ class InverseSolver:
         ):
             raise ValueError("reference_x must contain one finite value per input.")
         resolved_target_spec = self._resolve_target_spec(target_spec)
+        resolved_linear_constraints = self._resolve_linear_constraints(linear_constraints)
         for output_index, spec in resolved_target_spec.items():
             if "target" in spec:
                 target[0, output_index] = float(cast(float, spec["target"]))
@@ -230,6 +233,9 @@ class InverseSolver:
                     if not np.isfinite(value):
                         return float("inf")
                     violation += max(0.0, -value)
+            for coefficients, lower, upper in resolved_linear_constraints:
+                value = float(coefficients @ x)
+                violation += max(lower - value, 0.0) + max(value - upper, 0.0)
             return violation
 
         def target_error_for(prediction: np.ndarray) -> np.ndarray:
@@ -318,6 +324,13 @@ class InverseSolver:
                     "mse": float(np.mean(target_error**2)),
                     "weighted_loss": weighted_loss,
                     "constraint_violation": violation,
+                    "linear_constraint_violation": float(
+                        sum(
+                            max(lower - float(coefficients @ x_solution), 0.0)
+                            + max(float(coefficients @ x_solution) - upper, 0.0)
+                            for coefficients, lower, upper in resolved_linear_constraints
+                        )
+                    ),
                     "reference_distance": reference_loss**0.5,
                     "ood_penalty_component": ood_penalty * ood_loss,
                     "optimizer_success": optimizer_success,
@@ -340,6 +353,51 @@ class InverseSolver:
             if len(answers) == n_solutions:
                 break
         return sorted(answers, key=lambda answer: float(answer["weighted_loss"]))
+
+    def _resolve_linear_constraints(
+        self, linear_constraints: list[dict[str, Any]] | None
+    ) -> list[tuple[np.ndarray, float, float]]:
+        """Validate affine bounds of the form ``lower <= coefficients @ x <= upper``.
+
+        Callable constraints remain useful for arbitrary domain logic.  This
+        compact representation covers common budget, mass-balance, and blend
+        constraints without requiring users to write a callback.
+        """
+        if linear_constraints is None:
+            return []
+        if self.model.input_dim is None:
+            raise RuntimeError("Load a trained model before resolving linear constraints.")
+        resolved: list[tuple[np.ndarray, float, float]] = []
+        for constraint in linear_constraints:
+            if not isinstance(constraint, dict) or set(constraint) - {
+                "coefficients",
+                "lower",
+                "upper",
+            }:
+                raise ValueError(
+                    "Each linear constraint must be a dictionary with coefficients, lower, and/or upper."
+                )
+            if "coefficients" not in constraint or (
+                "lower" not in constraint and "upper" not in constraint
+            ):
+                raise ValueError(
+                    "Each linear constraint needs coefficients and at least one bound."
+                )
+            coefficients = np.asarray(constraint["coefficients"], dtype=float)
+            lower = float(constraint.get("lower", -np.inf))
+            upper = float(constraint.get("upper", np.inf))
+            if (
+                coefficients.shape != (self.model.input_dim,)
+                or not np.isfinite(coefficients).all()
+                or np.isnan(lower)
+                or np.isnan(upper)
+                or lower > upper
+            ):
+                raise ValueError(
+                    "Linear constraints need finite coefficients and lower <= upper bounds."
+                )
+            resolved.append((coefficients, lower, upper))
+        return resolved
 
     def _resolve_target_spec(
         self, target_spec: dict[int | str, dict[str, Any]] | None

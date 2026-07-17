@@ -21,7 +21,7 @@ from sklearn.ensemble import (
     RandomForestRegressor,
 )
 from sklearn.linear_model import LinearRegression, Ridge
-from sklearn.model_selection import RandomizedSearchCV, train_test_split
+from sklearn.model_selection import GroupShuffleSplit, RandomizedSearchCV, train_test_split
 from sklearn.multioutput import MultiOutputRegressor
 from sklearn.preprocessing import StandardScaler
 from torch import nn
@@ -243,9 +243,18 @@ class AdaptiveBlackBox:
         if search_mode == "fast" or model_name not in self._search_spaces() or len(X) < 8:
             return candidate
         budget = {"balanced": 3, "thorough": 8}[search_mode]
+        parameter_space = self._search_spaces()[model_name]
+        # MultiOutputRegressor exposes its base-estimator parameters with an
+        # ``estimator__`` prefix.  Keeping this translation here lets the same
+        # candidate participate in the documented search budgets for both
+        # single- and multi-output data.
+        if model_name == "hist_gradient_boosting" and self.output_dim != 1:
+            parameter_space = {
+                f"estimator__{name}": values for name, values in parameter_space.items()
+            }
         search = RandomizedSearchCV(
             candidate,
-            self._search_spaces()[model_name],
+            parameter_space,
             n_iter=budget,
             scoring="neg_mean_squared_error",
             cv=min(3, len(X) // 2),
@@ -368,11 +377,24 @@ class AdaptiveBlackBox:
         if uncertainty_method == "split_conformal":
             if len(X) < 10:
                 raise ValueError("split_conformal requires at least 10 observations.")
-            model_index, calibration_index = train_test_split(
-                model_index,
-                test_size=calibration_fraction,
-                random_state=self.random_state,
-            )
+            if groups is None:
+                model_index, calibration_index = train_test_split(
+                    model_index,
+                    test_size=calibration_fraction,
+                    random_state=self.random_state,
+                )
+            else:
+                group_values = np.asarray(groups)
+                if group_values.shape != (len(X),):
+                    raise ValueError("groups must contain one value per observation.")
+                if len(np.unique(group_values)) < 2:
+                    raise ValueError("split_conformal with groups requires at least two groups.")
+                splitter = GroupShuffleSplit(
+                    n_splits=1,
+                    test_size=calibration_fraction,
+                    random_state=self.random_state,
+                )
+                model_index, calibration_index = next(splitter.split(X, Y, groups=group_values))
         X_model, Y_model = X[model_index], Y[model_index]
         model_groups = None if groups is None else np.asarray(groups)[model_index]
         scores: dict[str, list[dict[str, Any]]] = {name: [] for name in CANDIDATE_MODELS}

@@ -34,3 +34,17 @@ class ConformalTest(unittest.TestCase):
         engine.calibration_residuals = np.array([[1.0], [2.0], [3.0]])
         prediction, _, upper = engine.predict_interval([[0.0]], confidence=0.75)
         np.testing.assert_allclose(upper - prediction, [[3.0]])
+
+    def test_split_conformal_keeps_groups_disjoint(self) -> None:
+        x = np.linspace(-2.0, 2.0, 40).reshape(-1, 1)
+        groups = np.repeat(np.arange(10), 4)
+        engine = AdaptiveBlackBox(epochs=2).fit(
+            x,
+            x**2,
+            groups=groups,
+            validation_folds=2,
+            uncertainty_method="split_conformal",
+            calibration_fraction=0.25,
+        )
+        self.assertEqual(engine.calibration_samples, 12)
+        self.assertEqual(engine.training_samples, 28)

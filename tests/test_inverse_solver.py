@@ -76,6 +76,20 @@ class InverseSolverTest(unittest.TestCase):
         self.assertAlmostEqual(result["x"][0], 0.5, places=6)
         self.assertEqual(result["constraint_violation"], 0.0)
 
+    def test_affine_constraints_are_enforced_and_reported(self) -> None:
+        X = np.linspace(-1.0, 1.0, 40).reshape(-1, 1)
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "model.joblib"
+            AdaptiveBlackBox(epochs=3).fit(X, X, validation_folds=2).save(artifact)
+            result = InverseSolver(str(artifact)).inverse_solve(
+                np.array([0.5]),
+                [(-1.0, 1.0)],
+                linear_constraints=[{"coefficients": [1.0], "lower": 0.4, "upper": 0.6}],
+            )[0]
+        self.assertGreaterEqual(result["x"][0], 0.4 - 1e-6)
+        self.assertLessEqual(result["x"][0], 0.6 + 1e-6)
+        self.assertEqual(result["linear_constraint_violation"], 0.0)
+
     def test_structured_minimum_and_interval_targets(self) -> None:
         X = np.linspace(-1.0, 1.0, 30).reshape(-1, 1)
         Y = np.column_stack((X[:, 0], X[:, 0] ** 2))
