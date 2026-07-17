@@ -196,6 +196,7 @@ python -m ruff check src tests
 python -m ruff format --check src tests
 python -m mypy src/adaptive_surrogate
 python -m pytest
+python -m pytest --cov=adaptive_surrogate --cov-fail-under=85
 python -m build
 ```
 

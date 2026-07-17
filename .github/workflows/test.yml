@@ -21,6 +21,6 @@ jobs:
       - run: ruff check src tests
       - run: ruff format --check src tests
       - run: mypy src/adaptive_surrogate
-      - run: python -m pytest
+      - run: python -m pytest --cov=adaptive_surrogate --cov-fail-under=85
       - run: python -m build
       - run: python -c "from adaptive_surrogate import AdaptiveBlackBox; print(AdaptiveBlackBox.__name__)"
