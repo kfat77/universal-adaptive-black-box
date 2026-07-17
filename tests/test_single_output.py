@@ -15,6 +15,13 @@ class SingleOutputRegressionTest(unittest.TestCase):
         prediction = model.predict(np.array([[0.25]]))
         self.assertEqual(prediction.shape, (1, 1))
 
+    def test_training_reports_cross_validation_summary(self) -> None:
+        X = np.linspace(-1.0, 1.0, 30).reshape(-1, 1)
+        Y = (X**2).reshape(-1, 1)
+        model = AdaptiveBlackBox(epochs=2).fit(X, Y, validation_folds=3)
+        self.assertIn("mse_std", model.metrics[model.model_name])
+        self.assertIn("r2_std", model.metrics[model.model_name])
+
 
 if __name__ == "__main__":
     unittest.main()
