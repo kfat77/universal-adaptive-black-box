@@ -7,7 +7,9 @@ import numpy as np
 from src.adaptive_surrogate import (
     CandidateResult,
     ResourceBudget,
+    TabularDataset,
     TaskSpec,
+    diagnose_dataset,
     profile_task,
     route_task,
     score_candidate,
@@ -15,6 +17,42 @@ from src.adaptive_surrogate import (
 
 
 class OrchestrationTest(unittest.TestCase):
+    def test_diagnoses_a_loaded_dataset_with_a_user_readable_summary(self) -> None:
+        dataset = TabularDataset(
+            X=np.ones((12, 2)),
+            Y=np.ones((12, 1)),
+            feature_names=("temperature", "pressure"),
+            target_names=("yield",),
+        )
+        spec = TaskSpec(feature_names=dataset.feature_names, target_names=dataset.target_names)
+
+        report = diagnose_dataset(dataset, spec)
+
+        self.assertEqual(report.profile.n_samples, 12)
+        self.assertEqual(report.route.route, "tabular_regression")
+        self.assertIn("12 samples", report.summary)
+
+    def test_rejects_dataset_schema_or_shape_mismatch(self) -> None:
+        dataset = TabularDataset(
+            X=np.ones((2, 1)),
+            Y=np.ones((1, 1)),
+            feature_names=("x",),
+            target_names=("y",),
+        )
+
+        with self.assertRaises(ValueError):
+            diagnose_dataset(dataset, TaskSpec(feature_names=("x",), target_names=("y",)))
+        with self.assertRaises(ValueError):
+            diagnose_dataset(
+                TabularDataset(
+                    X=np.ones((2, 1)),
+                    Y=np.ones((2, 1)),
+                    feature_names=("x",),
+                    target_names=("y",),
+                ),
+                TaskSpec(feature_names=("x",), target_names=("other",)),
+            )
+
     def test_profiles_a_numerical_tabular_task(self) -> None:
         spec = TaskSpec(feature_names=("temperature", "pressure"), target_names=("yield",))
 

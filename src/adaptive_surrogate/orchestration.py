@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .data_loader import TabularDataset
+
 
 @dataclass(frozen=True)
 class TaskSpec:
@@ -74,6 +76,15 @@ class CandidateScore:
     within_budget: bool
 
 
+@dataclass(frozen=True)
+class DiagnosticReport:
+    """Task diagnosis in structured and user-readable forms."""
+
+    profile: TaskProfile
+    route: RouteRecommendation
+    summary: str
+
+
 def profile_task(spec: TaskSpec, features: np.ndarray) -> TaskProfile:
     """Summarize a validated numerical feature matrix for routing."""
     matrix = np.asarray(features)
@@ -98,6 +109,24 @@ def route_task(profile: TaskProfile) -> RouteRecommendation:
     return RouteRecommendation(
         "tabular_regression", "Numerical features have no declared time order."
     )
+
+
+def diagnose_dataset(dataset: TabularDataset, spec: TaskSpec) -> DiagnosticReport:
+    """Diagnose a loaded dataset when its stored schema matches the task description."""
+    if dataset.feature_names != spec.feature_names or dataset.target_names != spec.target_names:
+        raise ValueError("TaskSpec names must match the loaded dataset schema.")
+    targets = np.asarray(dataset.Y)
+    if targets.ndim != 2 or targets.shape[0] != dataset.X.shape[0]:
+        raise ValueError("Dataset inputs and targets must be two-dimensional with matching rows.")
+    if targets.shape[1] != len(dataset.target_names):
+        raise ValueError("Dataset target names must match target columns.")
+    profile = profile_task(spec, dataset.X)
+    route = route_task(profile)
+    summary = (
+        f"{profile.task_kind}: {profile.n_samples} samples, {profile.n_features} features, "
+        f"and {profile.n_targets} targets. Recommended route: {route.route}."
+    )
+    return DiagnosticReport(profile, route, summary)
 
 
 def score_candidate(candidate: CandidateResult, budget: ResourceBudget) -> CandidateScore:
