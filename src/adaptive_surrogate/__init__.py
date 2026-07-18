@@ -6,6 +6,15 @@ from .data_loader import TabularDataset, load_tabular_data
 from .explainability import local_sensitivity, permutation_importance
 from .forward_solver import ForwardSolver
 from .inverse_solver import InverseSolver
+from .lifecycle import (
+    AdapterStatus,
+    EvaluatedCandidate,
+    RetrainingRecommendation,
+    available_adapters,
+    evaluate_candidates,
+    recommend_retraining,
+    select_candidate,
+)
 from .orchestration import (
     CandidateResult,
     CandidateScore,
@@ -28,11 +37,18 @@ __all__ = [
     "AdaptiveBlackBox",
     "ForwardSolver",
     "InverseSolver",
+    "AdapterStatus",
+    "EvaluatedCandidate",
+    "RetrainingRecommendation",
     "TabularDataset",
     "load_tabular_data",
     "local_sensitivity",
     "permutation_importance",
     "recommend_next_experiments",
+    "available_adapters",
+    "evaluate_candidates",
+    "recommend_retraining",
+    "select_candidate",
     "non_dominated_mask",
     "CandidateResult",
     "CandidateScore",
