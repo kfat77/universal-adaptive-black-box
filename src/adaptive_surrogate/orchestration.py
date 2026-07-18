@@ -174,7 +174,11 @@ def score_candidate(candidate: CandidateResult, budget: ResourceBudget) -> Candi
         (candidate.prediction_milliseconds, budget.max_prediction_milliseconds),
         (candidate.model_bytes, budget.max_model_bytes),
     )
-    ratios = [value / limit for value, limit in measurements if limit is not None]
+    ratios = [
+        0.0 if limit == 0 and value == 0 else float("inf") if limit == 0 else value / limit
+        for value, limit in measurements
+        if limit is not None
+    ]
     within_budget = all(ratio <= 1.0 for ratio in ratios)
     value = candidate.error + float(np.mean(ratios)) if within_budget else float("inf")
     return CandidateScore(value, within_budget)

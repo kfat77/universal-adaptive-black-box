@@ -28,6 +28,13 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual([item.name for item in evaluation], ["fast", "accurate"])
         self.assertEqual(select_candidate(candidates, budget).name, "accurate")
 
+    def test_treats_zero_budget_as_only_allowing_zero_measured_cost(self) -> None:
+        candidate = CandidateResult("free", 0.1, 0.0, 0.0, 0)
+
+        selected = select_candidate([candidate], ResourceBudget(max_training_seconds=0.0))
+
+        self.assertEqual(selected.name, "free")
+
     def test_reports_adapter_availability_without_importing_optional_packages(self) -> None:
         adapters = {item.name: item.available for item in available_adapters()}
 
