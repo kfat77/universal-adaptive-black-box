@@ -5,11 +5,13 @@ import unittest
 import numpy as np
 
 from src.adaptive_surrogate import (
+    AdaptiveBlackBox,
     CandidateResult,
     ResourceBudget,
     TabularDataset,
     TaskSpec,
     diagnose_dataset,
+    fit_task,
     profile_task,
     route_task,
     score_candidate,
@@ -17,6 +19,58 @@ from src.adaptive_surrogate import (
 
 
 class OrchestrationTest(unittest.TestCase):
+    def test_sorts_time_rows_and_groups_before_training(self) -> None:
+        class CapturingEngine:
+            def fit(self, inputs, targets, **options):
+                self.inputs = inputs
+                self.targets = targets
+                self.options = options
+                return self
+
+        dataset = TabularDataset(
+            X=np.array([[3.0], [1.0], [2.0]]),
+            Y=np.array([[30.0], [10.0], [20.0]]),
+            feature_names=("timestamp",),
+            target_names=("rainfall",),
+        )
+        spec = TaskSpec(dataset.feature_names, dataset.target_names, time_column="timestamp")
+
+        engine = fit_task(CapturingEngine(), dataset, spec, groups=np.array(["c", "a", "b"]))
+
+        self.assertEqual(engine.inputs[:, 0].tolist(), [1.0, 2.0, 3.0])
+        self.assertEqual(engine.targets[:, 0].tolist(), [10.0, 20.0, 30.0])
+        self.assertEqual(engine.options["groups"].tolist(), ["a", "b", "c"])
+
+    def test_trains_time_ordered_data_with_time_series_validation(self) -> None:
+        dataset = TabularDataset(
+            X=np.array(
+                [
+                    [8.0, 80.0],
+                    [1.0, 10.0],
+                    [7.0, 70.0],
+                    [2.0, 20.0],
+                    [6.0, 60.0],
+                    [3.0, 30.0],
+                    [5.0, 50.0],
+                    [4.0, 40.0],
+                ]
+            ),
+            Y=np.array([[8.0], [1.0], [7.0], [2.0], [6.0], [3.0], [5.0], [4.0]]),
+            feature_names=("timestamp", "temperature"),
+            target_names=("rainfall",),
+        )
+        spec = TaskSpec(
+            feature_names=dataset.feature_names,
+            target_names=dataset.target_names,
+            time_column="timestamp",
+        )
+
+        model = fit_task(AdaptiveBlackBox(epochs=1), dataset, spec, validation_folds=2)
+
+        self.assertEqual(model.validation_strategy, "time_series")
+        self.assertEqual(model.feature_names, dataset.feature_names)
+        self.assertLess(model.training_x_scaled[0, 0], 0.0)
+
     def test_diagnoses_a_loaded_dataset_with_a_user_readable_summary(self) -> None:
         dataset = TabularDataset(
             X=np.ones((12, 2)),

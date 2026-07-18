@@ -1,9 +1,11 @@
 """Small, explicit orchestration primitives for resource-constrained surrogate tasks."""
 
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
+from .core_engine import AdaptiveBlackBox
 from .data_loader import TabularDataset
 
 
@@ -127,6 +129,42 @@ def diagnose_dataset(dataset: TabularDataset, spec: TaskSpec) -> DiagnosticRepor
         f"and {profile.n_targets} targets. Recommended route: {route.route}."
     )
     return DiagnosticReport(profile, route, summary)
+
+
+def fit_task(
+    engine: AdaptiveBlackBox, dataset: TabularDataset, spec: TaskSpec, **fit_options: Any
+) -> AdaptiveBlackBox:
+    """Train an existing engine using the validation strategy selected by diagnosis."""
+    report = diagnose_dataset(dataset, spec)
+    strategy = "time_series" if report.route.route == "time_aware_validation" else "kfold"
+    requested_strategy = fit_options.pop("validation_strategy", strategy)
+    if requested_strategy != strategy:
+        raise ValueError("validation_strategy conflicts with the diagnosed task route.")
+    for option, expected in (
+        ("feature_names", dataset.feature_names),
+        ("target_names", dataset.target_names),
+    ):
+        supplied = fit_options.pop(option, None)
+        if supplied is not None and tuple(supplied) != expected:
+            raise ValueError(f"{option} conflicts with the loaded dataset schema.")
+    inputs, targets = dataset.X, dataset.Y
+    if spec.time_column is not None:
+        time_index = dataset.feature_names.index(spec.time_column)
+        order = np.argsort(inputs[:, time_index], kind="stable")
+        inputs, targets = inputs[order], targets[order]
+        if "groups" in fit_options:
+            groups = np.asarray(fit_options["groups"])
+            if groups.shape != (len(order),):
+                raise ValueError("groups must contain one value per dataset row.")
+            fit_options["groups"] = groups[order]
+    return engine.fit(
+        inputs,
+        targets,
+        validation_strategy=strategy,
+        feature_names=dataset.feature_names,
+        target_names=dataset.target_names,
+        **fit_options,
+    )
 
 
 def score_candidate(candidate: CandidateResult, budget: ResourceBudget) -> CandidateScore:
